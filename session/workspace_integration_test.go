@@ -242,7 +242,7 @@ func TestWorkspaceMigration_BackfillsWorkspaceID(t *testing.T) {
 	remote := git.FirstRemoteURL(canonical) // "" — no remote configured
 	derived, err := reg.EnsureWorkspace(canonical, remote)
 	require.NoError(t, err)
-	assert.Equal(t, config.WorkspaceID(canonical, remote), derived.ID,
+	assert.Equal(t, config.WorkspaceID(canonical), derived.ID,
 		"derived workspace id must equal the content-addressed hash")
 
 	// Re-deriving for the same repo path is idempotent — the case where a

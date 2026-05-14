@@ -45,9 +45,11 @@ type Workspace struct {
 	LastUsedAt  time.Time          `json:"last_used_at"`
 }
 
-// WorkspaceID derives a stable identifier from a (canonical repo path, remote URL) pair.
-func WorkspaceID(canonicalRepoPath, remoteURL string) string {
-	h := sha256.Sum256([]byte(canonicalRepoPath + "\x00" + remoteURL))
+// WorkspaceID derives a stable identifier from a canonical repo path. The
+// remote URL is intentionally not part of the hash so the workspace survives
+// `git remote set-url` (e.g. swapping origin to a fork after first registration).
+func WorkspaceID(canonicalRepoPath string) string {
+	h := sha256.Sum256([]byte(canonicalRepoPath))
 	return hex.EncodeToString(h[:6])
 }
 
@@ -185,7 +187,7 @@ func (r *WorkspaceRegistry) Touch(id string) error {
 // the canonical path and remote URL themselves so this package stays free of any
 // direct git/exec dependency.
 func (r *WorkspaceRegistry) EnsureWorkspace(canonicalPath, remoteURL string) (*Workspace, error) {
-	id := WorkspaceID(canonicalPath, remoteURL)
+	id := WorkspaceID(canonicalPath)
 	if existing := r.Get(id); existing != nil {
 		_ = r.Touch(id)
 		return existing, nil

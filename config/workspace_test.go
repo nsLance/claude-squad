@@ -29,15 +29,25 @@ func scopeConfigHome(t *testing.T) string {
 }
 
 func TestWorkspaceID_StableAndDistinct(t *testing.T) {
-	a := WorkspaceID("/a/b", "git@github.com:foo/bar.git")
-	a2 := WorkspaceID("/a/b", "git@github.com:foo/bar.git")
-	b := WorkspaceID("/a/b", "git@github.com:foo/other.git")
-	c := WorkspaceID("/other/path", "git@github.com:foo/bar.git")
+	a := WorkspaceID("/a/b")
+	a2 := WorkspaceID("/a/b")
+	c := WorkspaceID("/other/path")
 
-	assert.Equal(t, a, a2, "same (path, remote) must hash to same id")
-	assert.NotEqual(t, a, b, "different remote must produce different id")
+	assert.Equal(t, a, a2, "same path must hash to same id")
 	assert.NotEqual(t, a, c, "different path must produce different id")
 	assert.Len(t, a, 12, "id is 12 hex chars (6 bytes)")
+}
+
+func TestWorkspaceID_IgnoresRemoteURL(t *testing.T) {
+	// Adding/changing a remote URL must not change the workspace ID — that was
+	// the source of the "duplicate workspace on `git remote set-url`" bug.
+	scopeConfigHome(t)
+	reg := LoadWorkspaceRegistry()
+	ws1, err := reg.EnsureWorkspace("/Users/x/projects/foo", "https://upstream/foo.git")
+	require.NoError(t, err)
+	ws2, err := reg.EnsureWorkspace("/Users/x/projects/foo", "https://fork/foo.git")
+	require.NoError(t, err)
+	assert.Equal(t, ws1.ID, ws2.ID, "same path must resolve to same workspace regardless of remote URL")
 }
 
 func TestEnsureWorkspace_IdempotentAndPersistent(t *testing.T) {
@@ -59,18 +69,17 @@ func TestEnsureWorkspace_IdempotentAndPersistent(t *testing.T) {
 	assert.Equal(t, ws1.ID, ws2.ID)
 	assert.Len(t, reg.Workspaces, 1)
 
-	// Changing the remote URL produces a fresh workspace (real-world: user
-	// swapped origin to a fork). This matches the documented hash behavior.
+	// Changing the remote URL still resolves to the same workspace (real-world:
+	// user swapped origin to a fork). ID is path-only.
 	ws3, err := reg.EnsureWorkspace("/Users/x/projects/foo", "git@github.com:x/fork.git")
 	require.NoError(t, err)
-	assert.NotEqual(t, ws1.ID, ws3.ID)
-	assert.Len(t, reg.Workspaces, 2)
+	assert.Equal(t, ws1.ID, ws3.ID)
+	assert.Len(t, reg.Workspaces, 1)
 
-	// Persist + reload through disk to confirm both entries survive.
+	// Persist + reload through disk to confirm the entry survives.
 	reloaded := LoadWorkspaceRegistry()
-	assert.Len(t, reloaded.Workspaces, 2)
+	assert.Len(t, reloaded.Workspaces, 1)
 	assert.NotNil(t, reloaded.Get(ws1.ID))
-	assert.NotNil(t, reloaded.Get(ws3.ID))
 }
 
 func TestRegistry_GetFindRemoveTouch(t *testing.T) {

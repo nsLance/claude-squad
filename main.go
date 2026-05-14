@@ -44,6 +44,9 @@ var (
 			}
 
 			reg := config.LoadWorkspaceRegistry()
+			if err := reg.MigrateIDs(config.LoadState()); err != nil {
+				log.WarningLog.Printf("workspace id migration: %v", err)
+			}
 
 			var workspace *config.Workspace
 			switch {
@@ -173,6 +176,9 @@ var (
 			fmt.Printf("Config: %s\n%s\n", filepath.Join(configDir, config.ConfigFileName), configJson)
 
 			reg := config.LoadWorkspaceRegistry()
+			if err := reg.MigrateIDs(config.LoadState()); err != nil {
+				log.WarningLog.Printf("workspace id migration: %v", err)
+			}
 			fmt.Printf("\nWorkspaces: %s\n", filepath.Join(configDir, config.WorkspacesFileName))
 			for _, w := range reg.Workspaces {
 				fmt.Printf("  %s\n", w.String())
@@ -353,7 +359,7 @@ func migrateInstancesToWorkspaces(reg *config.WorkspaceRegistry) error {
 			canonical = repoPath
 		}
 		remote := git.FirstRemoteURL(canonical)
-		id := config.WorkspaceID(canonical, remote)
+		id := config.WorkspaceID(canonical)
 		if reg.Get(id) == nil {
 			now := time.Now()
 			_ = reg.Upsert(config.Workspace{
