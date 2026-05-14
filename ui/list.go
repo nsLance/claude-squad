@@ -692,11 +692,6 @@ func (l *List) Kill() {
 		log.ErrorLog.Printf("could not kill instance: %v", err)
 	}
 
-	// If you delete the last one in the list, select the previous one.
-	if l.selectedIdx == len(l.items)-1 {
-		defer l.Up()
-	}
-
 	// Unregister the reponame.
 	repoName, err := targetInstance.RepoName()
 	if err != nil {
@@ -705,8 +700,19 @@ func (l *List) Kill() {
 		l.rmRepo(repoName)
 	}
 
-	// Since there's items after this, the selectedIdx can stay the same.
+	// Splice the item out, then clamp selectedIdx so it remains in range. If
+	// the removed item was the last one, selectedIdx now points past the end —
+	// step it back. This must happen unconditionally rather than relying on
+	// Up()'s side effect, because Up() only moves the cursor when it finds a
+	// visible item below; if none qualifies (everything filtered/collapsed) it
+	// leaves selectedIdx stale and the next GetSelectedInstance panics.
 	l.items = append(l.items[:l.selectedIdx], l.items[l.selectedIdx+1:]...)
+	if l.selectedIdx >= len(l.items) {
+		l.selectedIdx = len(l.items) - 1
+	}
+	if l.selectedIdx < 0 {
+		l.selectedIdx = 0
+	}
 	l.ensureSelectionVisible()
 }
 
@@ -763,9 +769,12 @@ func (l *List) AddInstance(instance *session.Instance) (finalize func()) {
 	}
 }
 
-// GetSelectedInstance returns the currently selected instance
+// GetSelectedInstance returns the currently selected instance. Returns nil if
+// the list is empty or selectedIdx is somehow out of range (a defensive guard:
+// list mutations like Kill must keep selectedIdx in-bounds, but a missed clamp
+// must not crash the program).
 func (l *List) GetSelectedInstance() *session.Instance {
-	if len(l.items) == 0 {
+	if l.selectedIdx < 0 || l.selectedIdx >= len(l.items) {
 		return nil
 	}
 	return l.items[l.selectedIdx]
