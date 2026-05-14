@@ -183,7 +183,17 @@ func (g *GitWorktree) Prune() error {
 	return nil
 }
 
-// CleanupWorktrees removes all worktrees and their associated branches
+// CleanupWorktrees removes the legacy pre-workspaces worktree directory
+// ($CLAUDE_SQUAD_HOME/worktrees) and best-effort deletes any branches the
+// directories were associated with. Post-workspaces every active worktree
+// lives under workspaces/<id>/worktrees/ — those are handled by
+// CleanupWorkspaceWorktrees. This only mops up what the pre-workspaces build
+// left behind.
+//
+// Tolerates being invoked from outside a git repo: `cs reset` can now be run
+// anywhere (per the workspace launch flow), so the `git worktree list` step
+// — which depends on cwd being a repo — is best-effort and never fails the
+// caller. Directory removal still happens regardless.
 func CleanupWorktrees() error {
 	worktreesDir, err := getWorktreeDirectory()
 	if err != nil {
@@ -191,61 +201,60 @@ func CleanupWorktrees() error {
 	}
 
 	entries, err := os.ReadDir(worktreesDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("failed to read worktree directory: %w", err)
 	}
-
-	// Get a list of all branches associated with worktrees
-	cmd := exec.Command("git", "worktree", "list", "--porcelain")
-	output, err := cmd.Output()
-	if err != nil {
-		return fmt.Errorf("failed to list worktrees: %w", err)
+	if len(entries) == 0 {
+		return nil
 	}
 
-	// Parse the output to extract branch names
+	// Best-effort branch lookup. Without -C, this runs in cwd; when cs reset
+	// is invoked outside a git repo (legitimate post-workspaces), git exits
+	// 128. That's expected — we just lose the branch-deletion shortcut and
+	// fall through to dir removal. The branches will dangle in their original
+	// repos, but those repos are the workspaces' RepoPath which the
+	// per-workspace cleanup already handles for current sessions.
 	worktreeBranches := make(map[string]string)
-	currentWorktree := ""
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		if strings.HasPrefix(line, "worktree ") {
-			currentWorktree = strings.TrimPrefix(line, "worktree ")
-		} else if strings.HasPrefix(line, "branch ") {
-			branchPath := strings.TrimPrefix(line, "branch ")
-			// Extract branch name from refs/heads/branch-name
-			branchName := strings.TrimPrefix(branchPath, "refs/heads/")
-			if currentWorktree != "" {
-				worktreeBranches[currentWorktree] = branchName
+	if output, err := exec.Command("git", "worktree", "list", "--porcelain").Output(); err == nil {
+		currentWorktree := ""
+		for _, line := range strings.Split(string(output), "\n") {
+			if strings.HasPrefix(line, "worktree ") {
+				currentWorktree = strings.TrimPrefix(line, "worktree ")
+			} else if strings.HasPrefix(line, "branch ") {
+				branchName := strings.TrimPrefix(strings.TrimPrefix(line, "branch "), "refs/heads/")
+				if currentWorktree != "" {
+					worktreeBranches[currentWorktree] = branchName
+				}
 			}
 		}
+	} else {
+		log.WarningLog.Printf("legacy worktree cleanup: skipping branch lookup (git worktree list: %v)", err)
 	}
 
 	for _, entry := range entries {
 		if entry.IsDir() {
 			worktreePath := filepath.Join(worktreesDir, entry.Name())
 
-			// Delete the branch associated with this worktree if found
 			for path, branch := range worktreeBranches {
 				if strings.Contains(path, entry.Name()) {
-					// Delete the branch
 					deleteCmd := exec.Command("git", "branch", "-D", branch)
 					if err := deleteCmd.Run(); err != nil {
-						// Log the error but continue with other worktrees
 						log.ErrorLog.Printf("failed to delete branch %s: %v", branch, err)
 					}
 					break
 				}
 			}
 
-			// Remove the worktree directory
 			os.RemoveAll(worktreePath)
 		}
 	}
 
-	// You have to prune the cleaned up worktrees.
-	cmd = exec.Command("git", "worktree", "prune")
-	_, err = cmd.Output()
-	if err != nil {
-		return fmt.Errorf("failed to prune worktrees: %w", err)
+	// Prune is also best-effort for the same reason: requires cwd to be a repo.
+	if _, err := exec.Command("git", "worktree", "prune").Output(); err != nil {
+		log.WarningLog.Printf("legacy worktree cleanup: skipping prune (%v)", err)
 	}
 
 	return nil

@@ -544,14 +544,34 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if msg.err != nil {
 			repoPath := msg.instance.Path
-			m.list.Kill()
 			// Branch-collision (orphan worktree blocking) gets a dedicated
 			// confirmation overlay so the user can clean it up in one keystroke
 			// rather than having to read the errBox and run git commands by hand.
 			var bce *git.BranchCollisionError
 			if errors.As(msg.err, &bce) {
-				return m, tea.Batch(m.confirmCleanupOrphan(bce, repoPath), m.instanceChanged())
+				// Capture replay options BEFORE Kill so we can recreate the
+				// session after the orphan is gone. msg.selectedBranch is
+				// the picker-selected branch (Shift+N flow); for the regular
+				// N flow it's empty and the auto-generated name on i.Branch
+				// was what collided — passing "" lets the retry regenerate.
+				retry := pendingCreate{
+					opts: session.InstanceOptions{
+						Title:       msg.instance.Title,
+						Path:        msg.instance.Path,
+						Program:     msg.instance.Program,
+						WorkspaceID: msg.instance.WorkspaceID,
+						ProfileName: msg.instance.ProfileName,
+						Branch:      msg.selectedBranch,
+					},
+					prompt:          msg.instance.Prompt,
+					autoYes:         msg.instance.AutoYes,
+					selectedBranch:  msg.selectedBranch,
+					promptAfterName: msg.promptAfterName,
+				}
+				m.list.Kill()
+				return m, tea.Batch(m.confirmCleanupOrphan(bce, repoPath, retry), m.instanceChanged())
 			}
+			m.list.Kill()
 			return m, tea.Batch(m.handleError(msg.err), m.instanceChanged())
 		}
 
@@ -580,6 +600,8 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
+	case replayCreateMsg:
+		return m, m.replaySessionCreate(msg.retry)
 	case spinner.TickMsg:
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
@@ -1260,6 +1282,13 @@ func tickUpdateMetadataCmd(active []*session.Instance) tea.Cmd {
 				defer wg.Done()
 				r := &results[i]
 				r.instance = instance
+				// Auto-accept the per-worktree trust prompt (claude's "Do you
+				// trust the files in this folder?", aider/gemini equivalents).
+				// Without this the agent sits on the trust screen and looks
+				// like it never launched. Safe to call every tick — it's a
+				// pane scrape + one keystroke that no-ops once the prompt is
+				// gone.
+				instance.CheckAndHandleTrustPrompt()
 				r.updated, r.hasPrompt = instance.HasUpdated()
 				r.diffStats = instance.ComputeDiff()
 			}(idx, inst)
@@ -1331,14 +1360,26 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 	return nil
 }
 
+// pendingCreate carries everything needed to replay a failed session create
+// after an orphan worktree has been cleaned up. Held by confirmCleanupOrphan's
+// closure so the retry uses the exact same title/path/program/branch/prompt
+// the user originally asked for — no need to re-prompt.
+type pendingCreate struct {
+	opts            session.InstanceOptions
+	prompt          string
+	autoYes         bool
+	selectedBranch  string
+	promptAfterName bool
+}
+
 // confirmCleanupOrphan opens an overlay offering to nuke the worktree+branch
-// referenced by a BranchCollisionError. On confirm, dispatches the cleanup
-// through pendingConfirmCmd so its tea.Msg result (success notice or error)
-// rides the message loop and reaches handleError/errBox with auto-hide. On
-// cancel, surfaces the original collision error so the user still knows why
-// the create failed.
-func (m *home) confirmCleanupOrphan(bce *git.BranchCollisionError, repoPath string) tea.Cmd {
-	message := fmt.Sprintf("Branch %q is held by an orphan worktree at:\n%s\n\nRemove worktree + branch and free the name?",
+// referenced by a BranchCollisionError. On confirm, removes the orphan and
+// immediately re-attempts the failed session create from `retry`, so the user
+// goes from "session-create blocked" to "session running" in one keystroke
+// instead of being dumped back at the menu. On cancel, surfaces the original
+// collision error so the user still has the path + manual-recovery command.
+func (m *home) confirmCleanupOrphan(bce *git.BranchCollisionError, repoPath string, retry pendingCreate) tea.Cmd {
+	message := fmt.Sprintf("Branch %q is held by an orphan worktree at:\n%s\n\nRemove worktree + branch and recreate the session?",
 		bce.Branch, bce.WorktreePath)
 
 	m.state = stateConfirm
@@ -1352,7 +1393,9 @@ func (m *home) confirmCleanupOrphan(bce *git.BranchCollisionError, repoPath stri
 			if err := git.RemoveOrphanWorktree(repoPath, path, branch); err != nil {
 				return fmt.Errorf("orphan cleanup failed: %w", err)
 			}
-			return fmt.Errorf("removed orphan worktree at %s — press n to recreate the session", path)
+			// Cleanup OK — hand the retry off to Update on the UI thread so
+			// AddInstance / list mutations don't race with rendering.
+			return replayCreateMsg{retry: retry}
 		}
 	}
 	m.confirmationOverlay.OnCancel = func() {
@@ -1363,6 +1406,44 @@ func (m *home) confirmCleanupOrphan(bce *git.BranchCollisionError, repoPath stri
 	}
 
 	return nil
+}
+
+// replayCreateMsg is delivered to Update on the UI thread after an orphan
+// worktree has been cleaned up, so the failed session-create can be replayed
+// without racing with rendering.
+type replayCreateMsg struct {
+	retry pendingCreate
+}
+
+// replaySessionCreate rebuilds the session that failed with a BranchCollisionError
+// and kicks off Start() in the background. Must be called from Update (mutates m).
+func (m *home) replaySessionCreate(r pendingCreate) tea.Cmd {
+	instance, err := session.NewInstance(r.opts)
+	if err != nil {
+		return m.handleError(fmt.Errorf("retry session: %w", err))
+	}
+	if r.autoYes {
+		instance.AutoYes = true
+	}
+	if r.prompt != "" {
+		instance.Prompt = r.prompt
+	}
+	finalizer := m.list.AddInstance(instance)
+	m.list.SetSelectedInstance(m.list.NumInstances() - 1)
+	instance.SetStatus(session.Loading)
+	finalizer()
+	selectedBranch := r.selectedBranch
+	promptAfterName := r.promptAfterName
+	startCmd := func() tea.Msg {
+		startErr := instance.Start(true)
+		return instanceStartedMsg{
+			instance:        instance,
+			err:             startErr,
+			promptAfterName: promptAfterName,
+			selectedBranch:  selectedBranch,
+		}
+	}
+	return tea.Batch(tea.WindowSize(), m.instanceChanged(), startCmd)
 }
 
 func (m *home) View() string {
