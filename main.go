@@ -142,10 +142,25 @@ var (
 			if err := git.CleanupWorktrees(); err != nil {
 				return fmt.Errorf("failed to cleanup worktrees: %w", err)
 			}
+
+			// Also clean up per-workspace worktree dirs. CleanupWorktrees only
+			// handles the legacy global dir; post-workspaces every session's
+			// worktree lives under that workspace's WorktreeRoot, and missing
+			// these is what leaves orphans behind that block future sessions.
+			reg := config.LoadWorkspaceRegistry()
+			for _, w := range reg.Workspaces {
+				root, err := w.WorktreeRoot()
+				if err != nil {
+					log.WarningLog.Printf("worktree root for workspace %s: %v", w.ID, err)
+					continue
+				}
+				if err := git.CleanupWorkspaceWorktrees(w.RepoPath, root); err != nil {
+					log.WarningLog.Printf("cleanup workspace %s worktrees: %v", w.ID, err)
+				}
+			}
 			fmt.Println("Worktrees have been cleaned up")
 
 			// Kill all per-workspace daemons and any legacy daemon.
-			reg := config.LoadWorkspaceRegistry()
 			for _, w := range reg.Workspaces {
 				if err := daemon.StopDaemon(w.ID); err != nil {
 					log.WarningLog.Printf("failed to stop daemon for workspace %s: %v", w.ID, err)

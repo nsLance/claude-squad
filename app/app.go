@@ -9,6 +9,7 @@ import (
 	"claude-squad/ui"
 	"claude-squad/ui/overlay"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -108,6 +109,11 @@ type home struct {
 	textOverlay *overlay.TextOverlay
 	// confirmationOverlay displays confirmation modals
 	confirmationOverlay *overlay.ConfirmationOverlay
+	// pendingConfirmCmd is dispatched after the confirmation overlay closes so
+	// that flows which want to emit tea.Msgs from a confirm decision (errBox
+	// auto-hide, follow-up state transitions) can do so via the message loop
+	// rather than mutating m synchronously inside an OnConfirm callback.
+	pendingConfirmCmd tea.Cmd
 }
 
 // nextWorkspace returns the workspace that should follow the currently-active one
@@ -537,7 +543,15 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.list.SelectInstance(msg.instance)
 
 		if msg.err != nil {
+			repoPath := msg.instance.Path
 			m.list.Kill()
+			// Branch-collision (orphan worktree blocking) gets a dedicated
+			// confirmation overlay so the user can clean it up in one keystroke
+			// rather than having to read the errBox and run git commands by hand.
+			var bce *git.BranchCollisionError
+			if errors.As(msg.err, &bce) {
+				return m, tea.Batch(m.confirmCleanupOrphan(bce, repoPath), m.instanceChanged())
+			}
 			return m, tea.Batch(m.handleError(msg.err), m.instanceChanged())
 		}
 
@@ -827,6 +841,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if shouldClose {
 			m.state = stateDefault
 			m.confirmationOverlay = nil
+			if cmd := m.pendingConfirmCmd; cmd != nil {
+				m.pendingConfirmCmd = nil
+				return m, cmd
+			}
 			return m, nil
 		}
 		return m, nil
@@ -1308,6 +1326,40 @@ func (m *home) confirmAction(message string, action tea.Cmd) tea.Cmd {
 
 	m.confirmationOverlay.OnCancel = func() {
 		m.state = stateDefault
+	}
+
+	return nil
+}
+
+// confirmCleanupOrphan opens an overlay offering to nuke the worktree+branch
+// referenced by a BranchCollisionError. On confirm, dispatches the cleanup
+// through pendingConfirmCmd so its tea.Msg result (success notice or error)
+// rides the message loop and reaches handleError/errBox with auto-hide. On
+// cancel, surfaces the original collision error so the user still knows why
+// the create failed.
+func (m *home) confirmCleanupOrphan(bce *git.BranchCollisionError, repoPath string) tea.Cmd {
+	message := fmt.Sprintf("Branch %q is held by an orphan worktree at:\n%s\n\nRemove worktree + branch and free the name?",
+		bce.Branch, bce.WorktreePath)
+
+	m.state = stateConfirm
+	m.confirmationOverlay = overlay.NewConfirmationOverlay(message)
+	m.confirmationOverlay.SetWidth(70)
+
+	m.confirmationOverlay.OnConfirm = func() {
+		m.state = stateDefault
+		branch, path := bce.Branch, bce.WorktreePath
+		m.pendingConfirmCmd = func() tea.Msg {
+			if err := git.RemoveOrphanWorktree(repoPath, path, branch); err != nil {
+				return fmt.Errorf("orphan cleanup failed: %w", err)
+			}
+			return fmt.Errorf("removed orphan worktree at %s — press n to recreate the session", path)
+		}
+	}
+	m.confirmationOverlay.OnCancel = func() {
+		m.state = stateDefault
+		// Re-surface the collision error so the user has the path + manual
+		// recovery command in front of them after dismissing the overlay.
+		m.pendingConfirmCmd = func() tea.Msg { return error(bce) }
 	}
 
 	return nil

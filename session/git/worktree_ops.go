@@ -6,8 +6,40 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
+
+// BranchCollisionError is returned when `git worktree add` refuses because the
+// requested branch is already checked out by another worktree (typically an
+// orphan left behind by a previous session). Callers can use errors.As to pull
+// out the conflicting path and prompt the user to clean it up.
+type BranchCollisionError struct {
+	Branch       string
+	WorktreePath string
+}
+
+func (e *BranchCollisionError) Error() string {
+	return fmt.Sprintf("branch %q is already used by worktree at %q (likely an orphan from a previous session — remove it with `git worktree remove --force %s` or pick a different session title)",
+		e.Branch, e.WorktreePath, e.WorktreePath)
+}
+
+// branchCollisionRE matches the line git prints when refusing to reuse a
+// branch that another worktree already has checked out. The path is captured.
+var branchCollisionRE = regexp.MustCompile(`is already used by worktree at '([^']+)'`)
+
+// classifyWorktreeAddErr inspects a `git worktree add` failure and, if it
+// matches the branch-collision pattern, returns a typed error so the TUI can
+// render a useful message instead of raw git stderr.
+func classifyWorktreeAddErr(branch string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if m := branchCollisionRE.FindStringSubmatch(err.Error()); m != nil {
+		return &BranchCollisionError{Branch: branch, WorktreePath: m[1]}
+	}
+	return err
+}
 
 // Setup creates a new worktree for the session
 func (g *GitWorktree) Setup() error {
@@ -52,14 +84,14 @@ func (g *GitWorktree) setupFromExistingBranch() error {
 		}
 		// Create a local tracking branch via worktree add -b
 		if _, err := g.runGitCommand(g.repoPath, "worktree", "add", "-b", g.branchName, g.worktreePath, fmt.Sprintf("origin/%s", g.branchName)); err != nil {
-			return fmt.Errorf("failed to create worktree from remote branch %s: %w", g.branchName, err)
+			return classifyWorktreeAddErr(g.branchName, err)
 		}
 		return nil
 	}
 
 	// Create a new worktree from the existing local branch
 	if _, err := g.runGitCommand(g.repoPath, "worktree", "add", g.worktreePath, g.branchName); err != nil {
-		return fmt.Errorf("failed to create worktree from branch %s: %w", g.branchName, err)
+		return classifyWorktreeAddErr(g.branchName, err)
 	}
 
 	return nil
@@ -90,7 +122,7 @@ func (g *GitWorktree) setupNewWorktree() error {
 	// This way, we can start the worktree with a clean slate.
 	// TODO: we might want to give an option to use main/master instead of the current branch.
 	if _, err := g.runGitCommand(g.repoPath, "worktree", "add", "-b", g.branchName, g.worktreePath, headCommit); err != nil {
-		return fmt.Errorf("failed to create worktree from commit %s: %w", headCommit, err)
+		return classifyWorktreeAddErr(g.branchName, err)
 	}
 
 	return nil
@@ -216,5 +248,122 @@ func CleanupWorktrees() error {
 		return fmt.Errorf("failed to prune worktrees: %w", err)
 	}
 
+	return nil
+}
+
+// CleanupWorkspaceWorktrees removes every worktree whose path is under
+// worktreeRoot from the git repo at repoPath, deletes the associated branches,
+// and prunes. This is the per-workspace counterpart to CleanupWorktrees, which
+// only handles the legacy global worktree directory. Returns a combined error
+// if any per-worktree removal failed, but always attempts every one — partial
+// progress beats abort-on-first-error here.
+func CleanupWorkspaceWorktrees(repoPath, worktreeRoot string) error {
+	if repoPath == "" || worktreeRoot == "" {
+		return nil
+	}
+	// If the worktree root doesn't exist, there's nothing to clean.
+	if _, err := os.Stat(worktreeRoot); os.IsNotExist(err) {
+		return nil
+	}
+
+	listCmd := exec.Command("git", "-C", repoPath, "worktree", "list", "--porcelain")
+	out, err := listCmd.Output()
+	if err != nil {
+		return fmt.Errorf("list worktrees in %s: %w", repoPath, err)
+	}
+
+	type entry struct{ path, branch string }
+	var entries []entry
+	var cur entry
+	flush := func() {
+		if cur.path != "" {
+			entries = append(entries, cur)
+		}
+		cur = entry{}
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		switch {
+		case strings.HasPrefix(line, "worktree "):
+			flush()
+			cur.path = strings.TrimPrefix(line, "worktree ")
+		case strings.HasPrefix(line, "branch "):
+			cur.branch = strings.TrimPrefix(strings.TrimPrefix(line, "branch "), "refs/heads/")
+		case line == "":
+			flush()
+		}
+	}
+	flush()
+
+	// Normalize worktreeRoot for the prefix check. macOS resolves $TMPDIR
+	// (and similar) through symlinks before `git worktree list` records the
+	// path, so an unresolved root would fail to match git's canonicalized
+	// entries even when both point at the same directory.
+	rootResolved, err := filepath.EvalSymlinks(worktreeRoot)
+	if err != nil {
+		rootResolved = worktreeRoot
+	}
+	root := strings.TrimRight(rootResolved, string(filepath.Separator)) + string(filepath.Separator)
+
+	var errs []error
+	for _, e := range entries {
+		entryPath := e.path
+		if resolved, rerr := filepath.EvalSymlinks(entryPath); rerr == nil {
+			entryPath = resolved
+		}
+		if !strings.HasPrefix(entryPath+string(filepath.Separator), root) {
+			continue
+		}
+		if _, err := exec.Command("git", "-C", repoPath, "worktree", "remove", "-f", e.path).CombinedOutput(); err != nil {
+			errs = append(errs, fmt.Errorf("remove worktree %s: %w", e.path, err))
+		}
+		if e.branch != "" {
+			// Branch deletion is best-effort: a missing branch just means git
+			// already cleaned it up alongside the worktree.
+			if out, err := exec.Command("git", "-C", repoPath, "branch", "-D", e.branch).CombinedOutput(); err != nil {
+				if !strings.Contains(string(out), "not found") {
+					log.WarningLog.Printf("delete branch %s in %s: %v", e.branch, repoPath, err)
+				}
+			}
+		}
+	}
+
+	if _, err := exec.Command("git", "-C", repoPath, "worktree", "prune").CombinedOutput(); err != nil {
+		errs = append(errs, fmt.Errorf("prune worktrees in %s: %w", repoPath, err))
+	}
+
+	// Sweep any leftover directories that git didn't know about (e.g. a worktree
+	// removed manually but whose dir survived).
+	if err := os.RemoveAll(worktreeRoot); err != nil {
+		errs = append(errs, fmt.Errorf("remove worktree root %s: %w", worktreeRoot, err))
+	}
+
+	if len(errs) == 0 {
+		return nil
+	}
+	msgs := make([]string, len(errs))
+	for i, e := range errs {
+		msgs[i] = e.Error()
+	}
+	return fmt.Errorf("workspace worktree cleanup: %s", strings.Join(msgs, "; "))
+}
+
+// RemoveOrphanWorktree force-removes a single worktree at worktreePath from
+// the git repo at repoPath, deletes the branch (best-effort), and prunes the
+// repo's worktree registry. Used by the TUI's orphan-cleanup confirmation
+// overlay after a BranchCollisionError.
+func RemoveOrphanWorktree(repoPath, worktreePath, branch string) error {
+	if out, err := exec.Command("git", "-C", repoPath, "worktree", "remove", "-f", worktreePath).CombinedOutput(); err != nil {
+		return fmt.Errorf("remove worktree %s: %s: %w", worktreePath, strings.TrimSpace(string(out)), err)
+	}
+	if branch != "" {
+		if out, err := exec.Command("git", "-C", repoPath, "branch", "-D", branch).CombinedOutput(); err != nil {
+			if !strings.Contains(string(out), "not found") {
+				return fmt.Errorf("delete branch %s: %s: %w", branch, strings.TrimSpace(string(out)), err)
+			}
+		}
+	}
+	if out, err := exec.Command("git", "-C", repoPath, "worktree", "prune").CombinedOutput(); err != nil {
+		return fmt.Errorf("prune worktrees in %s: %s: %w", repoPath, strings.TrimSpace(string(out)), err)
+	}
 	return nil
 }
