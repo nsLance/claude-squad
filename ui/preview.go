@@ -73,6 +73,15 @@ func (p *PreviewPane) UpdateContent(instance *session.Instance) error {
 				)),
 		))
 		return nil
+	case instance.Status == session.Exited:
+		p.setFallbackState(lipgloss.JoinVertical(lipgloss.Center,
+			"The agent exited. Press 'R' to restart it, or '↵' to restart and attach.",
+			"",
+			lipgloss.NewStyle().
+				Foreground(lipgloss.AdaptiveColor{Light: "#808080", Dark: "#808080"}).
+				Render("The worktree and branch are intact — restart relaunches the agent in place."),
+		))
+		return nil
 	}
 
 	var content string
@@ -184,7 +193,7 @@ func (p *PreviewPane) String() string {
 
 // ScrollUp scrolls up in the viewport
 func (p *PreviewPane) ScrollUp(instance *session.Instance) error {
-	if instance == nil || instance.Status == session.Paused {
+	if instance == nil || instance.Status == session.Paused || instance.Status == session.Exited {
 		return nil
 	}
 
@@ -217,7 +226,7 @@ func (p *PreviewPane) ScrollUp(instance *session.Instance) error {
 
 // ScrollDown scrolls down in the viewport
 func (p *PreviewPane) ScrollDown(instance *session.Instance) error {
-	if instance == nil || instance.Status == session.Paused {
+	if instance == nil || instance.Status == session.Paused || instance.Status == session.Exited {
 		return nil
 	}
 
@@ -250,7 +259,7 @@ func (p *PreviewPane) ScrollDown(instance *session.Instance) error {
 
 // ResetToNormalMode exits scroll mode and returns to normal mode
 func (p *PreviewPane) ResetToNormalMode(instance *session.Instance) error {
-	if instance == nil || instance.Status == session.Paused {
+	if instance == nil || instance.Status == session.Paused || instance.Status == session.Exited {
 		return nil
 	}
 

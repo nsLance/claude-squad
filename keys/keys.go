@@ -22,6 +22,9 @@ const (
 
 	KeyCheckout
 	KeyResume
+	// KeyRestart soft-resets a Running session whose tmux process exited: it
+	// relaunches the agent in the existing worktree (worktree/branch untouched).
+	KeyRestart
 	KeyPrompt // New key for entering a prompt
 	KeyHelp   // Key for showing help screen
 
@@ -56,6 +59,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"tab":        KeyTab,
 	"c":          KeyCheckout,
 	"r":          KeyResume,
+	"R":          KeyRestart,
 	"p":          KeySubmit,
 	"?":          KeyHelp,
 	"W":          KeySwitchWorkspace,
@@ -121,6 +125,10 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyResume: key.NewBinding(
 		key.WithKeys("r"),
 		key.WithHelp("r", "resume"),
+	),
+	KeyRestart: key.NewBinding(
+		key.WithKeys("R"),
+		key.WithHelp("R", "restart"),
 	),
 	KeySwitchWorkspace: key.NewBinding(
 		key.WithKeys("W"),

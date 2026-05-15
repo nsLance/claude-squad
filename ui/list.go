@@ -41,6 +41,7 @@ var emptyHintStyle = lipgloss.NewStyle().
 
 const readyIcon = "● "
 const pausedIcon = "⏸ "
+const exitedIcon = "✗ "
 
 var readyStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#51bd73", Dark: "#51bd73"})
@@ -53,6 +54,10 @@ var removedLinesStyle = lipgloss.NewStyle().
 
 var pausedStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#888888", Dark: "#888888"})
+
+// exitedStyle marks a session whose agent process has exited (tmux gone).
+var exitedStyle = lipgloss.NewStyle().
+	Foreground(lipgloss.Color("#de613e"))
 
 var titleStyle = lipgloss.NewStyle().
 	Padding(1, 1, 0, 1).
@@ -222,7 +227,7 @@ func (l *List) SetSize(width, height int) {
 // width and height.
 func (l *List) SetSessionPreviewSize(width, height int) (err error) {
 	for i, item := range l.items {
-		if !item.Started() || item.Paused() {
+		if !item.Started() || item.Paused() || item.Status == session.Exited {
 			continue
 		}
 
@@ -272,6 +277,8 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 		join = readyStyle.Render(readyIcon)
 	case session.Paused:
 		join = pausedStyle.Render(pausedIcon)
+	case session.Exited:
+		join = exitedStyle.Render(exitedIcon)
 	default:
 	}
 

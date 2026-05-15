@@ -27,6 +27,11 @@ const (
 	Loading
 	// Paused is if the instance is paused (worktree removed but branch preserved).
 	Paused
+	// Exited is when the agent process exited from inside the tmux pane (or
+	// crashed): the tmux session is gone but the worktree and branch are
+	// intact. Restart() relaunches the agent in place. New constant appended
+	// last so previously-serialized Status values stay stable.
+	Exited
 )
 
 // Instance is a running instance of claude code.
@@ -354,7 +359,9 @@ func (i *Instance) combineErrors(errs []error) error {
 }
 
 func (i *Instance) Preview() (string, error) {
-	if !i.started || i.Status == Paused {
+	// Exited sessions have no tmux pane to capture — the preview pane renders
+	// its own fallback for them, same as Paused.
+	if !i.started || i.Status == Paused || i.Status == Exited {
 		return "", nil
 	}
 	return i.tmuxSession.CapturePaneContent()
@@ -399,9 +406,9 @@ func (i *Instance) Attach() (chan struct{}, error) {
 }
 
 func (i *Instance) SetPreviewSize(width, height int) error {
-	if !i.started || i.Status == Paused {
-		return fmt.Errorf("cannot set preview size for instance that has not been started or " +
-			"is paused")
+	if !i.started || i.Status == Paused || i.Status == Exited {
+		return fmt.Errorf("cannot set preview size for instance that has not been started, " +
+			"is paused, or has exited")
 	}
 	return i.tmuxSession.SetDetachedSize(width, height)
 }
@@ -443,6 +450,48 @@ func (i *Instance) Paused() bool {
 // TmuxAlive returns true if the tmux session is alive. This is a sanity check before attaching.
 func (i *Instance) TmuxAlive() bool {
 	return i.tmuxSession.DoesSessionExist()
+}
+
+// Restart soft-resets a Running instance whose tmux session has died — the user
+// exited the agent from inside the pane, or the process crashed. It relaunches
+// the program in a fresh tmux session inside the EXISTING git worktree. Unlike
+// Resume, the worktree and branch are left completely intact, so in-progress
+// work on disk is preserved; only the agent process is restarted.
+func (i *Instance) Restart() error {
+	if !i.started {
+		return fmt.Errorf("cannot restart an instance that has not been started")
+	}
+	if i.Status == Paused {
+		return fmt.Errorf("cannot restart a paused session — press resume instead")
+	}
+	if i.gitWorktree == nil {
+		return fmt.Errorf("cannot restart: instance has no worktree")
+	}
+	if i.tmuxSession != nil && i.tmuxSession.DoesSessionExist() {
+		return fmt.Errorf("session %q is still alive — nothing to restart", i.Title)
+	}
+
+	worktreePath := i.gitWorktree.GetWorktreePath()
+	if _, err := os.Stat(worktreePath); err != nil {
+		return fmt.Errorf("worktree is gone (%s) — press resume to rebuild it", worktreePath)
+	}
+
+	env, err := i.resolveEnv()
+	if err != nil {
+		log.ErrorLog.Print(err)
+		return fmt.Errorf("failed to resolve env: %w", err)
+	}
+
+	// A dead tmux session leaves the TmuxSession holding a stale PTY/monitor;
+	// build a fresh one so Start() begins from a clean slate.
+	i.tmuxSession = tmux.NewTmuxSession(i.Title, i.Program, i.WorkspaceID)
+	if err := i.tmuxSession.Start(worktreePath, env); err != nil {
+		log.ErrorLog.Print(err)
+		return fmt.Errorf("failed to restart tmux session: %w", err)
+	}
+
+	i.SetStatus(Running)
+	return nil
 }
 
 // Pause stops the tmux session and removes the worktree, preserving the branch

@@ -82,6 +82,7 @@ var keyMenuGroup = map[keys.KeyName]menuGroup{
 	keys.KeyEnter:              menuGroupAction,
 	keys.KeySubmit:             menuGroupAction,
 	keys.KeyResume:             menuGroupAction,
+	keys.KeyRestart:            menuGroupAction,
 	keys.KeyCheckout:           menuGroupAction,
 	keys.KeyShiftUp:            menuGroupAction,
 	keys.KeyShiftDown:          menuGroupAction,
@@ -173,6 +174,11 @@ func (m *Menu) addInstanceOptions() {
 	if m.instance.Status == session.Paused {
 		actionGroup = append(actionGroup, keys.KeyResume)
 	} else {
+		// Surface "restart" only when the agent process has exited — the tmux
+		// session is dead and the session would otherwise look stuck.
+		if m.instance.Status == session.Exited {
+			actionGroup = append(actionGroup, keys.KeyRestart)
+		}
 		actionGroup = append(actionGroup, keys.KeyCheckout)
 	}
 

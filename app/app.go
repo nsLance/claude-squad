@@ -478,7 +478,12 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
 	case metadataUpdateDoneMsg:
 		for _, r := range msg.results {
-			if r.updated {
+			if !r.alive {
+				// The agent process exited from inside the pane (or crashed):
+				// the tmux session is gone. Flag it so the list shows a
+				// distinct indicator and R/Enter offer a restart.
+				r.instance.SetStatus(session.Exited)
+			} else if r.updated {
 				r.instance.SetStatus(session.Running)
 			} else if r.hasPrompt {
 				r.instance.TapEnter()
@@ -1070,6 +1075,18 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, m.handleError(err)
 		}
 		return m, tea.WindowSize()
+	case keys.KeyRestart:
+		// Soft-reset: relaunch the agent for a Running session whose tmux
+		// process exited, reusing the existing worktree. No-op (with an error
+		// toast) if the session is still alive or is paused.
+		selected := m.list.GetSelectedInstance()
+		if selected == nil || selected.Status == session.Loading {
+			return m, nil
+		}
+		if err := selected.Restart(); err != nil {
+			return m, m.handleError(err)
+		}
+		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
 	case keys.KeySwitchWorkspace:
 		next := m.nextWorkspace()
 		if next == nil {
@@ -1100,11 +1117,14 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, nil
 		}
 		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Paused() || selected.Status == session.Loading || !selected.TmuxAlive() {
+		if selected == nil || selected.Paused() || selected.Status == session.Loading {
 			return m, nil
 		}
 		// Terminal tab: attach to terminal session
 		if m.tabbedWindow.IsInTerminalTab() {
+			if !selected.TmuxAlive() {
+				return m, nil
+			}
 			m.showHelpScreen(helpTypeInstanceAttach{}, func() {
 				ch, err := m.tabbedWindow.AttachTerminal()
 				if err != nil {
@@ -1115,6 +1135,15 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 				m.state = stateDefault
 			})
 			return m, nil
+		}
+		// If the agent exited from inside the pane, the tmux session is dead.
+		// Soft-reset it in place first so Enter still attaches — the worktree
+		// and branch are left intact (unlike a full Resume).
+		if !selected.TmuxAlive() {
+			if err := selected.Restart(); err != nil {
+				return m, m.handleError(err)
+			}
+			m.instanceChanged()
 		}
 		// Show help screen before attaching
 		m.showHelpScreen(helpTypeInstanceAttach{}, func() {
@@ -1225,6 +1254,7 @@ type instanceMetaResult struct {
 	instance  *session.Instance
 	updated   bool
 	hasPrompt bool
+	alive     bool
 	diffStats *git.DiffStats
 }
 
@@ -1290,6 +1320,7 @@ func tickUpdateMetadataCmd(active []*session.Instance) tea.Cmd {
 				// gone.
 				instance.CheckAndHandleTrustPrompt()
 				r.updated, r.hasPrompt = instance.HasUpdated()
+				r.alive = instance.TmuxAlive()
 				r.diffStats = instance.ComputeDiff()
 			}(idx, inst)
 		}
