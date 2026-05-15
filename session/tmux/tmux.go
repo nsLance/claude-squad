@@ -77,6 +77,21 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// SessionExistsOnDefaultSocket reports whether a session named name exists on
+// tmux's default socket — i.e. was created by a claude-squad build that
+// predates the dedicated socket. Used by `cs migrate-socket`.
+func SessionExistsOnDefaultSocket(name string) bool {
+	return cmd.MakeExecutor().Run(
+		DefaultSocketCommand("has-session", fmt.Sprintf("-t=%s", name))) == nil
+}
+
+// KillSessionOnDefaultSocket kills the named session on tmux's default socket.
+// Used by `cs migrate-socket` to retire a session after it has been recreated
+// on the dedicated socket.
+func KillSessionOnDefaultSocket(name string) error {
+	return cmd.MakeExecutor().Run(DefaultSocketCommand("kill-session", "-t", name))
+}
+
 // TmuxSession represents a managed tmux session
 type TmuxSession struct {
 	// Initialized by NewTmuxSession

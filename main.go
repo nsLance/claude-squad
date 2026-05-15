@@ -177,6 +177,52 @@ var (
 		},
 	}
 
+	migrateSocketCmd = &cobra.Command{
+		Use:   "migrate-socket",
+		Short: "Move existing sessions onto claude-squad's dedicated tmux socket",
+		Long: "claude-squad now runs tmux on a dedicated socket. Sessions created by\n" +
+			"earlier builds live on tmux's default socket and are invisible to the new\n" +
+			"build. This recreates each of them on the dedicated socket in the same\n" +
+			"worktree: the worktree, branch, and on-disk changes are kept; the live agent\n" +
+			"process and in-tmux scrollback are not (tmux cannot move a session between\n" +
+			"servers). Run this once, with no claude-squad TUI open.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			log.Initialize(false)
+			defer log.Close()
+
+			state := config.LoadState()
+			storage, err := session.NewStorage(state)
+			if err != nil {
+				return fmt.Errorf("failed to initialize storage: %w", err)
+			}
+			instances, err := storage.LoadInstances()
+			if err != nil {
+				return fmt.Errorf("failed to load sessions: %w", err)
+			}
+
+			var migrated, unchanged int
+			for _, inst := range instances {
+				ok, err := session.MigrateToDedicatedSocket(inst)
+				switch {
+				case err != nil:
+					fmt.Printf("  ✗ %s: %v\n", inst.Title, err)
+					unchanged++
+				case ok:
+					fmt.Printf("  ✓ %s\n", inst.Title)
+					migrated++
+				default:
+					unchanged++
+				}
+			}
+			if err := storage.SaveInstances(instances); err != nil {
+				return fmt.Errorf("failed to save sessions: %w", err)
+			}
+			fmt.Printf("migrated %d session(s) to the dedicated socket; %d unchanged\n",
+				migrated, unchanged)
+			return nil
+		},
+	}
+
 	debugCmd = &cobra.Command{
 		Use:   "debug",
 		Short: "Print debug information like config paths, registered workspaces, and the effective env for each profile in the resolved workspace.",
@@ -469,6 +515,7 @@ func init() {
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(resetCmd)
+	rootCmd.AddCommand(migrateSocketCmd)
 
 	checkpointCmd.Flags().StringVarP(&checkpointMessage, "message", "m", "",
 		"Checkpoint summary (one line)")
