@@ -19,14 +19,17 @@ var workspaceHeaderStyle = lipgloss.NewStyle().
 	Bold(true).
 	Foreground(lipgloss.AdaptiveColor{Light: "#1a1a1a", Dark: "#dddddd"})
 
-var workspaceTabActiveStyle = lipgloss.NewStyle().
+// activeViewChipStyle renders the single currently-active filter view in the
+// list header. The full multi-workspace tab strip was removed in favour of
+// showing only this one chip; V cycles through the views.
+var activeViewChipStyle = lipgloss.NewStyle().
 	Padding(0, 1).
 	Bold(true).
 	Background(lipgloss.Color("62")).
 	Foreground(lipgloss.Color("230"))
 
-var workspaceTabInactiveStyle = lipgloss.NewStyle().
-	Padding(0, 1).
+// viewArrowStyle dims the ◂ ▸ cycle affordances flanking the active-view chip.
+var viewArrowStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#7A7474", Dark: "#9C9494"})
 
 var countSummaryStyle = lipgloss.NewStyle().
@@ -387,7 +390,7 @@ func (l *List) String() string {
 }
 
 // renderHeader builds the always-visible part of the list pane: the title bar,
-// the workspace tab strip (which may itself wrap), and the count summary.
+// the active-view indicator, and the count summary.
 func (l *List) renderHeader() string {
 	titleText := " Instances "
 	if l.activeWorkspaceName != "" {
@@ -417,7 +420,7 @@ func (l *List) renderHeader() string {
 	groups := l.groupedItems()
 	tabs := l.workspaceTabDescriptors(groups)
 	if len(tabs) >= 1 {
-		b.WriteString(l.renderWorkspaceTabs(tabs))
+		b.WriteString(l.renderViewIndicator(tabs))
 		b.WriteString("\n")
 		b.WriteString(countSummaryStyle.Render(l.renderCountSummary(tabs)))
 		b.WriteString("\n")
@@ -536,48 +539,42 @@ func (l *List) workspaceTabDescriptors(groups []instanceGroup) []tabDescriptor {
 	return out
 }
 
-// renderWorkspaceTabs renders a "[All] [foo] [bar]" tab strip, wrapping to a
-// new row when the cumulative width of tabs would overflow the list pane.
-// Without wrapping a long tab list pushes the rest of the UI off-screen.
-func (l *List) renderWorkspaceTabs(tabs []tabDescriptor) string {
-	cells := []string{l.tabRender("All", l.viewFilter == "")}
-	for _, t := range tabs {
-		cells = append(cells, l.tabRender(t.label, l.viewFilter == t.id))
-	}
-
-	// Effective width of the list pane after the renderer's adjustment. Leave
-	// a one-char margin so wrapping kicks in slightly early; truncation in
-	// edge cases (a single tab wider than the pane) is preferred over
-	// overflow.
-	maxWidth := AdjustPreviewWidth(l.width) - 1
-	if maxWidth < 1 {
-		maxWidth = 1
-	}
-
-	var rows []string
-	var rowCells []string
-	rowWidth := 0
-	for _, cell := range cells {
-		cellW := lipgloss.Width(cell)
-		if len(rowCells) > 0 && rowWidth+cellW > maxWidth {
-			rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, rowCells...))
-			rowCells = nil
-			rowWidth = 0
+// renderViewIndicator renders the single-line "current view" header: the
+// active filter chip flanked by ◂ ▸ cycle arrows and a "(2 of 4)" position
+// counter. It replaces the old full tab strip — only the active view is shown,
+// so the header stays a single line regardless of how many workspaces exist.
+// V cycles the view in the same order the counter advances (All → ws1 → …).
+func (l *List) renderViewIndicator(tabs []tabDescriptor) string {
+	// View order matches cycleViewFilter: "All" first, then each workspace.
+	label := "All"
+	idx := 0
+	if l.viewFilter != "" {
+		for i, t := range tabs {
+			if t.id == l.viewFilter {
+				label = t.label
+				idx = i + 1
+				break
+			}
 		}
-		rowCells = append(rowCells, cell)
-		rowWidth += cellW
 	}
-	if len(rowCells) > 0 {
-		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, rowCells...))
-	}
-	return strings.Join(rows, "\n")
-}
+	total := len(tabs) + 1 // +1 for the "All" view
 
-func (l *List) tabRender(label string, active bool) string {
-	if active {
-		return workspaceTabActiveStyle.Render(label)
+	// Truncate an over-long workspace label so the indicator never overflows
+	// the list pane and pushes the rest of the UI off-screen.
+	maxLabel := AdjustPreviewWidth(l.width) - 16
+	if maxLabel > 3 && runewidth.StringWidth(label) > maxLabel {
+		label = runewidth.Truncate(label, maxLabel, "...")
 	}
-	return workspaceTabInactiveStyle.Render(label)
+
+	chip := activeViewChipStyle.Render(label)
+	row := lipgloss.JoinHorizontal(
+		lipgloss.Top,
+		viewArrowStyle.Render(" ◂ "),
+		chip,
+		viewArrowStyle.Render(" ▸ "),
+		countSummaryStyle.Render(fmt.Sprintf("  (%d of %d)", idx+1, total)),
+	)
+	return row
 }
 
 // renderCountSummary builds the "5 sessions · 3 workspaces" status line beneath
