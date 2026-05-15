@@ -43,6 +43,40 @@ func DefaultSocketCommand(args ...string) *exec.Cmd {
 	return exec.Command("tmux", args...)
 }
 
+// InstallCheckpointBindings installs the in-pane checkpoint key bindings on the
+// claude-squad tmux server: <prefix> k and the prefix-less C-Space each open a
+// display-popup running `cs checkpoint --interactive`. Because tmux bindings
+// fire before the pane sees the keys, this works from inside any agent CLI.
+//
+// The bindings are server-wide, which is safe only because claude-squad runs on
+// its own socket (SocketName). Best-effort and idempotent: it is re-run on each
+// session start, and failures are logged, never fatal.
+func InstallCheckpointBindings(cmdExec cmd.Executor) {
+	exe, err := os.Executable()
+	if err != nil {
+		log.WarningLog.Printf("checkpoint bindings: cannot resolve executable: %v", err)
+		return
+	}
+	// Run inside a popup; -E closes it when `cs checkpoint` exits.
+	popup := []string{"display-popup", "-E", "-w", "60%", "-h", "40%",
+		shellQuote(exe) + " checkpoint --interactive"}
+
+	bindings := [][]string{
+		append([]string{"bind-key", "k"}, popup...),             // <prefix> k
+		append([]string{"bind-key", "-n", "C-Space"}, popup...), // C-Space, no prefix
+	}
+	for _, args := range bindings {
+		if err := cmdExec.Run(Command(args...)); err != nil {
+			log.WarningLog.Printf("checkpoint binding: %v", err)
+		}
+	}
+}
+
+// shellQuote single-quotes s for safe use inside a tmux/shell command string.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // TmuxSession represents a managed tmux session
 type TmuxSession struct {
 	// Initialized by NewTmuxSession
@@ -181,6 +215,9 @@ func (t *TmuxSession) Start(workDir string, env []string) error {
 	if err := t.cmdExec.Run(mouseCmd); err != nil {
 		log.InfoLog.Printf("Warning: failed to enable mouse scrolling for session %s: %v", t.sanitizedName, err)
 	}
+
+	// Install the in-pane checkpoint key bindings (server-wide on our socket).
+	InstallCheckpointBindings(t.cmdExec)
 
 	err = t.Restore()
 	if err != nil {
