@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"claude-squad/app"
 	cmd2 "claude-squad/cmd"
 	"claude-squad/config"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -238,6 +240,38 @@ var (
 		},
 	}
 
+	checkpointMessage     string
+	checkpointInteractive bool
+
+	checkpointCmd = &cobra.Command{
+		Use:   "checkpoint",
+		Short: "Record a signed checkpoint in the current session's journal",
+		Long: "Record a signed checkpoint in the journal of the claude-squad session this " +
+			"command runs inside. The session is resolved from the CS_* environment variables " +
+			"claude-squad injects into every session, so this works from any agent CLI.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			log.Initialize(false)
+			defer log.Close()
+
+			summary := strings.TrimSpace(checkpointMessage)
+			if summary == "" && checkpointInteractive {
+				fmt.Print("Checkpoint summary: ")
+				line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+				summary = strings.TrimSpace(line)
+			}
+			if summary == "" {
+				return fmt.Errorf("a checkpoint summary is required (pass -m, or use --interactive)")
+			}
+
+			sig, err := session.CheckpointFromEnv(summary)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("checkpoint recorded: %s\n", sig.Hash[:12])
+			return nil
+		},
+	}
+
 	workspaceCmd = &cobra.Command{
 		Use:   "workspace",
 		Short: "Manage claude-squad workspaces",
@@ -435,6 +469,12 @@ func init() {
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(resetCmd)
+
+	checkpointCmd.Flags().StringVarP(&checkpointMessage, "message", "m", "",
+		"Checkpoint summary (one line)")
+	checkpointCmd.Flags().BoolVar(&checkpointInteractive, "interactive", false,
+		"Prompt for the summary on stdin (used by the in-pane checkpoint key binding)")
+	rootCmd.AddCommand(checkpointCmd)
 
 	workspaceCmd.AddCommand(workspaceLsCmd)
 	workspaceCmd.AddCommand(workspaceAddCmd)

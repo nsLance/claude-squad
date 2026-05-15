@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -106,6 +107,26 @@ func (i *Instance) CreateCheckpoint(summary string) (*journal.Signature, error) 
 		Session:      journal.SessionRef{ID: i.SessionID, Title: i.Title},
 		Workspace:    i.WorkspaceID,
 		WorktreePath: worktree,
+		Summary:      summary,
+		Agent:        journal.AgentRef{Name: journal.AgentHuman},
+	})
+}
+
+// CheckpointFromEnv records a checkpoint for the session the caller is running
+// inside, resolving it from the CS_* environment variables claude-squad injects
+// into every session. This is the entry point for the `cs checkpoint`
+// subprocess, which runs in the session's tmux pane and inherits that env.
+func CheckpointFromEnv(summary string) (*journal.Signature, error) {
+	journalPath := os.Getenv(EnvJournalPath)
+	if journalPath == "" {
+		return nil, fmt.Errorf(
+			"not inside a claude-squad session with journaling enabled (%s is unset)", EnvJournalPath)
+	}
+	return CreateCheckpoint(CheckpointOptions{
+		JournalPath:  journalPath,
+		Session:      journal.SessionRef{ID: os.Getenv(EnvSessionID), Title: os.Getenv(EnvSession)},
+		Workspace:    os.Getenv(EnvWorkspace),
+		WorktreePath: os.Getenv(EnvWorktreePath),
 		Summary:      summary,
 		Agent:        journal.AgentRef{Name: journal.AgentHuman},
 	})
