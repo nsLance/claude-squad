@@ -155,7 +155,7 @@ func TestWorkspaceFlow_EndToEnd(t *testing.T) {
 	require.NotEmpty(t, ptyFac.cmds, "tmux session must have been started")
 	startCmd := ptyFac.cmds[0]
 	joined := strings.Join(startCmd.Args, " ")
-	assert.Contains(t, joined, "tmux new-session", "first PTY command should be the tmux start")
+	assert.Contains(t, joined, "tmux -L claudesquad new-session", "first PTY command should be the tmux start")
 
 	// The -e flags get appended in map-iteration order, so we look for each pair
 	// individually rather than asserting on the full argv.

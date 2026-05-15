@@ -394,9 +394,9 @@ func migrateInstancesToWorkspaces(reg *config.WorkspaceRegistry) error {
 		oldName := tmux.SessionName(data[i].Title, "")
 		newName := tmux.SessionName(data[i].Title, id)
 		if oldName != newName {
-			if exec.Command("tmux", "has-session", "-t", oldName).Run() == nil &&
-				exec.Command("tmux", "has-session", "-t", newName).Run() != nil {
-				_ = exec.Command("tmux", "rename-session", "-t", oldName, newName).Run()
+			if tmux.Command("has-session", "-t", oldName).Run() == nil &&
+				tmux.Command("has-session", "-t", newName).Run() != nil {
+				_ = tmux.Command("rename-session", "-t", oldName, newName).Run()
 			}
 		}
 

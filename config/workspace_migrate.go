@@ -206,7 +206,10 @@ func repairGitWorktreesUnder(newDir string) {
 // the old workspace prefix to use the new one. Mirrors the naming scheme in
 // session/tmux.toClaudeSquadTmuxName.
 func renameTmuxSessionsForWorkspace(oldID, newID string) {
-	out, err := exec.Command("tmux", "list-sessions", "-F", "#{session_name}").Output()
+	// claude-squad runs tmux on a dedicated socket (tmux.SocketName). The
+	// socket name is inlined here rather than imported so the config package
+	// keeps no dependency on session/tmux.
+	out, err := exec.Command("tmux", "-L", "claudesquad", "list-sessions", "-F", "#{session_name}").Output()
 	if err != nil {
 		return
 	}
@@ -218,7 +221,7 @@ func renameTmuxSessionsForWorkspace(oldID, newID string) {
 			continue
 		}
 		newName := tmuxNamePrefix + newShort + "_" + line[len(oldNamePrefix):]
-		_ = exec.Command("tmux", "rename-session", "-t", line, newName).Run()
+		_ = exec.Command("tmux", "-L", "claudesquad", "rename-session", "-t", line, newName).Run()
 	}
 }
 

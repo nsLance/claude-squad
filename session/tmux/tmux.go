@@ -24,6 +24,25 @@ const ProgramClaude = "claude"
 const ProgramAider = "aider"
 const ProgramGemini = "gemini"
 
+// SocketName is the dedicated tmux server socket claude-squad runs on. Using
+// our own socket (tmux -L) isolates cs sessions — and any server-wide options
+// or key bindings we set — from the user's default tmux server.
+const SocketName = "claudesquad"
+
+// Command builds an *exec.Cmd that runs tmux against claude-squad's dedicated
+// socket. Every tmux invocation in claude-squad goes through Command (or, for
+// the legacy sweep, DefaultSocketCommand) so they all share one isolated server.
+func Command(args ...string) *exec.Cmd {
+	return exec.Command("tmux", append([]string{"-L", SocketName}, args...)...)
+}
+
+// DefaultSocketCommand builds a tmux command against tmux's default socket.
+// Reserved for legacy cleanup: sweeping cs sessions left on the default server
+// by claude-squad builds that predate the dedicated socket.
+func DefaultSocketCommand(args ...string) *exec.Cmd {
+	return exec.Command("tmux", args...)
+}
+
 // TmuxSession represents a managed tmux session
 type TmuxSession struct {
 	// Initialized by NewTmuxSession
@@ -117,13 +136,13 @@ func (t *TmuxSession) Start(workDir string, env []string) error {
 		args = append(args, "-e", kv)
 	}
 	args = append(args, "-d", "-s", t.sanitizedName, "-c", workDir, t.program)
-	cmd := exec.Command("tmux", args...)
+	cmd := Command(args...)
 
 	ptmx, err := t.ptyFactory.Start(cmd)
 	if err != nil {
 		// Cleanup any partially created session if any exists.
 		if t.DoesSessionExist() {
-			cleanupCmd := exec.Command("tmux", "kill-session", "-t", t.sanitizedName)
+			cleanupCmd := Command("kill-session", "-t", t.sanitizedName)
 			if cleanupErr := t.cmdExec.Run(cleanupCmd); cleanupErr != nil {
 				err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
 			}
@@ -152,13 +171,13 @@ func (t *TmuxSession) Start(workDir string, env []string) error {
 	ptmx.Close()
 
 	// Set history limit to enable scrollback (default is 2000, we'll use 10000 for more history)
-	historyCmd := exec.Command("tmux", "set-option", "-t", t.sanitizedName, "history-limit", "10000")
+	historyCmd := Command("set-option", "-t", t.sanitizedName, "history-limit", "10000")
 	if err := t.cmdExec.Run(historyCmd); err != nil {
 		log.InfoLog.Printf("Warning: failed to set history-limit for session %s: %v", t.sanitizedName, err)
 	}
 
 	// Enable mouse scrolling for the session
-	mouseCmd := exec.Command("tmux", "set-option", "-t", t.sanitizedName, "mouse", "on")
+	mouseCmd := Command("set-option", "-t", t.sanitizedName, "mouse", "on")
 	if err := t.cmdExec.Run(mouseCmd); err != nil {
 		log.InfoLog.Printf("Warning: failed to enable mouse scrolling for session %s: %v", t.sanitizedName, err)
 	}
@@ -203,7 +222,7 @@ func (t *TmuxSession) CheckAndHandleTrustPrompt() bool {
 
 // Restore attaches to an existing session and restores the window size
 func (t *TmuxSession) Restore() error {
-	ptmx, err := t.ptyFactory.Start(exec.Command("tmux", "attach-session", "-t", t.sanitizedName))
+	ptmx, err := t.ptyFactory.Start(Command("attach-session", "-t", t.sanitizedName))
 	if err != nil {
 		return fmt.Errorf("error opening PTY: %w", err)
 	}
@@ -442,7 +461,7 @@ func (t *TmuxSession) Close() error {
 		t.ptmx = nil
 	}
 
-	cmd := exec.Command("tmux", "kill-session", "-t", t.sanitizedName)
+	cmd := Command("kill-session", "-t", t.sanitizedName)
 	if err := t.cmdExec.Run(cmd); err != nil {
 		errs = append(errs, fmt.Errorf("error killing tmux session: %w", err))
 	}
@@ -479,14 +498,14 @@ func (t *TmuxSession) updateWindowSize(cols, rows int) error {
 
 func (t *TmuxSession) DoesSessionExist() bool {
 	// Using "-t name" does a prefix match, which is wrong. `-t=` does an exact match.
-	existsCmd := exec.Command("tmux", "has-session", fmt.Sprintf("-t=%s", t.sanitizedName))
+	existsCmd := Command("has-session", fmt.Sprintf("-t=%s", t.sanitizedName))
 	return t.cmdExec.Run(existsCmd) == nil
 }
 
 // CapturePaneContent captures the content of the tmux pane
 func (t *TmuxSession) CapturePaneContent() (string, error) {
 	// Add -e flag to preserve escape sequences (ANSI color codes)
-	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-t", t.sanitizedName)
+	cmd := Command("capture-pane", "-p", "-e", "-J", "-t", t.sanitizedName)
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
 		return "", fmt.Errorf("error capturing pane content: %v", err)
@@ -498,7 +517,7 @@ func (t *TmuxSession) CapturePaneContent() (string, error) {
 // start and end specify the starting and ending line numbers (use "-" for the start/end of history)
 func (t *TmuxSession) CapturePaneContentWithOptions(start, end string) (string, error) {
 	// Add -e flag to preserve escape sequences (ANSI color codes)
-	cmd := exec.Command("tmux", "capture-pane", "-p", "-e", "-J", "-S", start, "-E", end, "-t", t.sanitizedName)
+	cmd := Command("capture-pane", "-p", "-e", "-J", "-S", start, "-E", end, "-t", t.sanitizedName)
 	output, err := t.cmdExec.Output(cmd)
 	if err != nil {
 		return "", fmt.Errorf("failed to capture tmux pane content with options: %v", err)
@@ -506,17 +525,28 @@ func (t *TmuxSession) CapturePaneContentWithOptions(start, end string) (string, 
 	return string(output), nil
 }
 
-// CleanupSessions kills all tmux sessions that start with "session-"
+// CleanupSessions kills every claude-squad tmux session (name prefix
+// TmuxPrefix). It sweeps both claude-squad's dedicated socket and tmux's
+// default socket, so `cs reset` also clears strays left behind by builds that
+// predate the dedicated socket.
 func CleanupSessions(cmdExec cmd.Executor) error {
-	// First try to list sessions
-	cmd := exec.Command("tmux", "ls")
-	output, err := cmdExec.Output(cmd)
+	var errs []error
+	for _, mk := range []func(...string) *exec.Cmd{Command, DefaultSocketCommand} {
+		if err := cleanupSessionsOn(cmdExec, mk); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
 
-	// If there's an error and it's because no server is running, that's fine
-	// Exit code 1 typically means no sessions exist
+// cleanupSessionsOn kills the claude-squad sessions on a single tmux socket,
+// selected by the command factory mk (Command or DefaultSocketCommand).
+func cleanupSessionsOn(cmdExec cmd.Executor, mk func(...string) *exec.Cmd) error {
+	output, err := cmdExec.Output(mk("ls"))
 	if err != nil {
+		// Exit code 1 means no server running / no sessions — nothing to do.
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return nil // No sessions to clean up
+			return nil
 		}
 		return fmt.Errorf("failed to list tmux sessions: %v", err)
 	}
@@ -529,7 +559,7 @@ func CleanupSessions(cmdExec cmd.Executor) error {
 
 	for _, match := range matches {
 		log.InfoLog.Printf("cleaning up session: %s", match)
-		if err := cmdExec.Run(exec.Command("tmux", "kill-session", "-t", match)); err != nil {
+		if err := cmdExec.Run(mk("kill-session", "-t", match)); err != nil {
 			return fmt.Errorf("failed to kill tmux session %s: %v", match, err)
 		}
 	}
