@@ -213,11 +213,16 @@ func TestWorkspaceFlow_NoProfileNoOverlay(t *testing.T) {
 	root, _ := ws.WorktreeRoot()
 	assert.True(t, strings.HasPrefix(wt.GetWorktreePath(), root))
 
-	// No -e flags in the tmux argv (no env overlay when no profile is defined).
+	// No profile means no env overlay — the only -e flags are the CS_*
+	// session vars, which are always injected so `cs checkpoint` works.
 	require.NotEmpty(t, ptyFac.cmds)
-	for _, a := range ptyFac.cmds[0].Args {
-		assert.False(t, strings.HasPrefix(a, "-e"),
-			"no -e injection expected when workspace has no profiles, got %q", a)
+	args := ptyFac.cmds[0].Args
+	for idx, a := range args {
+		if a != "-e" || idx+1 >= len(args) {
+			continue
+		}
+		assert.True(t, strings.HasPrefix(args[idx+1], "CS_"),
+			"only CS_* env expected when workspace has no profiles, got %q", args[idx+1])
 	}
 }
 

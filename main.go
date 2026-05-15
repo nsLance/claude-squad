@@ -413,6 +413,10 @@ func migrateInstancesToWorkspaces(reg *config.WorkspaceRegistry) error {
 }
 
 func init() {
+	// Publish the version to the config package so non-main packages (the
+	// journal header) can stamp it without importing main.
+	config.Version = version
+
 	rootCmd.Flags().StringVarP(&programFlag, "program", "p", "",
 		"Program to run in new instances (e.g. 'aider --model ollama_chat/gemma3:1b')")
 	rootCmd.Flags().BoolVarP(&autoYesFlag, "autoyes", "y", false,

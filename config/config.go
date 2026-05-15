@@ -13,10 +13,15 @@ import (
 )
 
 const (
-	ConfigFileName    = "config.json"
-	defaultProgram    = "claude"
-	ConfigHomeEnvVar  = "CLAUDE_SQUAD_HOME"
+	ConfigFileName   = "config.json"
+	defaultProgram   = "claude"
+	ConfigHomeEnvVar = "CLAUDE_SQUAD_HOME"
 )
+
+// Version is claude-squad's own version string. It is set from main's version
+// literal in main's init() and stamped into the journal header event. Lives
+// here (not in main) so the session package can read it without importing main.
+var Version = "dev"
 
 // GetConfigDir returns the path to the application's configuration directory.
 // If $CLAUDE_SQUAD_HOME is set, it overrides the default (~/.claude-squad).

@@ -4,7 +4,9 @@ import (
 	"claude-squad/config"
 	"claude-squad/log"
 	"claude-squad/session/git"
+	"claude-squad/session/journal"
 	"claude-squad/session/tmux"
+	"context"
 	"path/filepath"
 
 	"fmt"
@@ -63,6 +65,10 @@ type Instance struct {
 	WorkspaceID string
 	// ProfileName is the workspace profile this instance was launched with.
 	ProfileName string
+	// SessionID is the journal session UUID, minted once at first Start and
+	// never changed. Empty for pre-journal instances and instances with no
+	// workspace.
+	SessionID string
 
 	// DiffStats stores the current git diff statistics
 	diffStats *git.DiffStats
@@ -77,6 +83,13 @@ type Instance struct {
 	tmuxSession *tmux.TmuxSession
 	// gitWorktree is the git worktree for the instance.
 	gitWorktree *git.GitWorktree
+
+	// journal is the per-session event log; nil when journaling is disabled.
+	journal *journal.Journal
+	// adapterCancel stops the transcript adapter goroutine; adapterDone is
+	// closed when that goroutine has fully exited.
+	adapterCancel context.CancelFunc
+	adapterDone   chan struct{}
 }
 
 // ToInstanceData converts an Instance to its serializable form
@@ -94,6 +107,7 @@ func (i *Instance) ToInstanceData() InstanceData {
 		AutoYes:     i.AutoYes,
 		WorkspaceID: i.WorkspaceID,
 		ProfileName: i.ProfileName,
+		SessionID:   i.SessionID,
 	}
 
 	// Only include worktree data if gitWorktree is initialized
@@ -134,6 +148,7 @@ func FromInstanceData(data InstanceData) (*Instance, error) {
 		Program:     data.Program,
 		WorkspaceID: data.WorkspaceID,
 		ProfileName: data.ProfileName,
+		SessionID:   data.SessionID,
 		gitWorktree: git.NewGitWorktreeFromStorage(
 			data.Worktree.RepoPath,
 			data.Worktree.WorktreePath,
@@ -289,7 +304,8 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 			return setupErr
 		}
 
-		// Resolve workspace-profile env (Env + EnvFiles + AgentHome dirs).
+		// Resolve workspace-profile env (Env + EnvFiles + AgentHome dirs),
+		// then layer on the CS_* session vars (mints SessionID on first run).
 		env, err := i.resolveEnv()
 		if err != nil {
 			if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
@@ -298,6 +314,7 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 			setupErr = fmt.Errorf("failed to resolve env: %w", err)
 			return setupErr
 		}
+		env = i.injectCSEnv(env)
 
 		// Create new session
 		if err := i.tmuxSession.Start(i.gitWorktree.GetWorktreePath(), env); err != nil {
@@ -312,6 +329,10 @@ func (i *Instance) Start(firstTimeSetup bool) error {
 
 	i.SetStatus(Running)
 
+	// Best-effort: open the journal and start the transcript adapter. Never
+	// fails the session — startJournal logs warnings internally.
+	i.startJournal()
+
 	return nil
 }
 
@@ -321,6 +342,10 @@ func (i *Instance) Kill() error {
 		// If instance was never started, just return success
 		return nil
 	}
+
+	// Stop journaling before tearing down tmux/worktree (the journal symlink
+	// lives inside the worktree).
+	i.stopJournal()
 
 	var errs []error
 
@@ -481,6 +506,7 @@ func (i *Instance) Restart() error {
 		log.ErrorLog.Print(err)
 		return fmt.Errorf("failed to resolve env: %w", err)
 	}
+	env = i.injectCSEnv(env)
 
 	// A dead tmux session leaves the TmuxSession holding a stale PTY/monitor;
 	// build a fresh one so Start() begins from a clean slate.
@@ -519,6 +545,10 @@ func (i *Instance) Pause() error {
 			return i.combineErrors(errs)
 		}
 	}
+
+	// Stop journaling before the worktree is removed (the journal symlink
+	// lives inside it).
+	i.stopJournal()
 
 	// Detach from tmux session instead of closing to preserve session output
 	if err := i.tmuxSession.DetachSafely(); err != nil {
@@ -582,6 +612,7 @@ func (i *Instance) Resume() error {
 		log.ErrorLog.Print(err)
 		return fmt.Errorf("failed to resolve env: %w", err)
 	}
+	env = i.injectCSEnv(env)
 
 	// Check if tmux session still exists from pause, otherwise create new one
 	if i.tmuxSession.DoesSessionExist() {
@@ -613,6 +644,7 @@ func (i *Instance) Resume() error {
 	}
 
 	i.SetStatus(Running)
+	i.startJournal()
 	return nil
 }
 

@@ -20,6 +20,7 @@ type InstanceData struct {
 	AutoYes     bool      `json:"auto_yes"`
 	WorkspaceID string    `json:"workspace_id,omitempty"`
 	ProfileName string    `json:"profile_name,omitempty"`
+	SessionID   string    `json:"session_id,omitempty"`
 
 	Program   string          `json:"program"`
 	Worktree  GitWorktreeData `json:"worktree"`
