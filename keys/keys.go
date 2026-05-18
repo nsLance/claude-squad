@@ -45,6 +45,10 @@ const (
 	// writes a finish event on save+quit. Requires confirm via the editor's
 	// own save action; quitting without saving aborts.
 	KeyFinish
+
+	// Reorder keybindings
+	KeyMoveUp
+	KeyMoveDown
 )
 
 // GlobalKeyStringsMap is a global, immutable map string to keybinding.
@@ -55,6 +59,8 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"j":          KeyDown,
 	"shift+up":   KeyShiftUp,
 	"shift+down": KeyShiftDown,
+	"J":          KeyMoveDown,
+	"K":          KeyMoveUp,
 	"N":          KeyPrompt,
 	"enter":      KeyEnter,
 	"o":          KeyEnter,
@@ -155,6 +161,15 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyFinish: key.NewBinding(
 		key.WithKeys("F"),
 		key.WithHelp("F", "finish (audit closeout)"),
+	),
+
+	KeyMoveUp: key.NewBinding(
+		key.WithKeys("K"),
+		key.WithHelp("K", "move up"),
+	),
+	KeyMoveDown: key.NewBinding(
+		key.WithKeys("J"),
+		key.WithHelp("J", "move down"),
 	),
 
 	// -- Special keybindings --

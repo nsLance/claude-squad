@@ -44,6 +44,7 @@ func (h helpTypeGeneral) toContent() string {
 		keyStyle.Render("N")+descStyle.Render("         - Create a new session with a prompt"),
 		keyStyle.Render("D")+descStyle.Render("         - Kill (delete) the selected session"),
 		keyStyle.Render("↑/j, ↓/k")+descStyle.Render("  - Navigate between sessions"),
+		keyStyle.Render("J/K")+descStyle.Render("       - Reorder sessions"),
 		keyStyle.Render("↵/o")+descStyle.Render("       - Attach to the selected session (restarts it if the agent exited)"),
 		keyStyle.Render("ctrl-q")+descStyle.Render("    - Detach from session"),
 		keyStyle.Render("R")+descStyle.Render("         - Restart a session whose agent exited (keeps the worktree)"),
