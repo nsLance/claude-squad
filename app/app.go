@@ -430,7 +430,7 @@ func (m *home) Init() tea.Cmd {
 			time.Sleep(100 * time.Millisecond)
 			return previewTickMsg{}
 		},
-		tickUpdateMetadataCmd(m.snapshotActiveInstances()),
+		tickUpdateMetadataCmd(m.snapshotActiveInstances(), m.list.GetSelectedInstance()),
 	)
 }
 
@@ -505,7 +505,7 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				r.instance.SetDiffStats(r.diffStats)
 			}
 		}
-		return m, tickUpdateMetadataCmd(m.snapshotActiveInstances())
+		return m, tickUpdateMetadataCmd(m.snapshotActiveInstances(), m.list.GetSelectedInstance())
 	case tea.MouseMsg:
 		// Handle mouse wheel events for scrolling the diff/preview pane
 		if msg.Action == tea.MouseActionPress {
@@ -1324,7 +1324,11 @@ func (m *home) snapshotActiveInstances() []*session.Instance {
 // Because it only re-schedules after completing, overlapping ticks are impossible.
 // The active instances slice should be snapshotted on the main thread via
 // snapshotActiveInstances() before being passed here.
-func tickUpdateMetadataCmd(active []*session.Instance) tea.Cmd {
+//
+// Only the selected instance gets a full diff (with Content); the rest get a
+// lightweight numstat-only summary. This keeps per-instance memory bounded
+// since the diff pane only ever renders the selected one.
+func tickUpdateMetadataCmd(active []*session.Instance, selected *session.Instance) tea.Cmd {
 	return func() tea.Msg {
 		time.Sleep(500 * time.Millisecond)
 
@@ -1349,7 +1353,11 @@ func tickUpdateMetadataCmd(active []*session.Instance) tea.Cmd {
 				instance.CheckAndHandleTrustPrompt()
 				r.updated, r.hasPrompt = instance.HasUpdated()
 				r.alive = instance.TmuxAlive()
-				r.diffStats = instance.ComputeDiff()
+				if instance == selected {
+					r.diffStats = instance.ComputeDiff()
+				} else {
+					r.diffStats = instance.ComputeDiffNumstat()
+				}
 			}(idx, inst)
 		}
 		wg.Wait()
