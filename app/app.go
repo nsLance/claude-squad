@@ -480,6 +480,10 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
 	case metadataUpdateDoneMsg:
 		for _, r := range msg.results {
+			// Skip instances that were paused while metadata was being computed
+			if r.instance.Status == session.Paused {
+				continue
+			}
 			if !r.alive {
 				// The agent process exited from inside the pane (or crashed):
 				// the tmux session is gone. Flag it so the list shows a
