@@ -9,6 +9,7 @@ import (
 	"claude-squad/log"
 	"claude-squad/session"
 	"claude-squad/session/git"
+	"claude-squad/session/journal"
 	"claude-squad/session/tmux"
 	"context"
 	"encoding/json"
@@ -286,6 +287,47 @@ var (
 		},
 	}
 
+	finishIntent              string
+	finishWork                string
+	finishFiles               []string
+	finishNoFiles             bool
+	finishVerificationStatus  string
+	finishVerificationReason  string
+	finishVerificationEvidence string
+	finishDisposition         string
+
+	finishCmd = &cobra.Command{
+		Use:   "finish",
+		Short: "Close out the current session's journal with the required-five audit payload",
+		Long: "Record a finish event in the journal of the claude-squad session this command runs " +
+			"inside. Refuses to close without Intent, Work, Files Changed (or --no-files), a " +
+			"Verification block, and a Disposition — the same gate miagent uses for " +
+			"`miagent-task finish`. Resolves the session from the CS_* env vars.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			log.Initialize(false)
+			defer log.Close()
+
+			f := journal.Finish{
+				Intent:       strings.TrimSpace(finishIntent),
+				Work:         strings.TrimSpace(finishWork),
+				FilesChanged: finishFiles,
+				NoFiles:      finishNoFiles,
+				Verification: &journal.Verification{
+					Status:   finishVerificationStatus,
+					Reason:   strings.TrimSpace(finishVerificationReason),
+					Evidence: strings.TrimSpace(finishVerificationEvidence),
+				},
+				Disposition: finishDisposition,
+			}
+			if err := session.FinishFromEnv(f); err != nil {
+				return err
+			}
+			fmt.Printf("finish recorded: disposition=%s verification=%s\n",
+				f.Disposition, f.Verification.Status)
+			return nil
+		},
+	}
+
 	checkpointMessage     string
 	checkpointInteractive bool
 
@@ -522,6 +564,24 @@ func init() {
 	checkpointCmd.Flags().BoolVar(&checkpointInteractive, "interactive", false,
 		"Prompt for the summary on stdin (used by the in-pane checkpoint key binding)")
 	rootCmd.AddCommand(checkpointCmd)
+
+	finishCmd.Flags().StringVar(&finishIntent, "intent", "",
+		"What this session was trying to accomplish (required)")
+	finishCmd.Flags().StringVar(&finishWork, "work", "",
+		"Summary of what was done — commands run, edits made, key outputs (required)")
+	finishCmd.Flags().StringArrayVar(&finishFiles, "files", nil,
+		"Path that changed, repeatable. Required unless --no-files is set.")
+	finishCmd.Flags().BoolVar(&finishNoFiles, "no-files", false,
+		"Explicitly assert that no files changed (mirrors miagent's 'no files changed')")
+	finishCmd.Flags().StringVar(&finishVerificationStatus, "verification", "",
+		"Verification status: not-run | partial | passed | failed | n/a (required)")
+	finishCmd.Flags().StringVar(&finishVerificationReason, "verification-reason", "",
+		"Required when --verification=not-run")
+	finishCmd.Flags().StringVar(&finishVerificationEvidence, "verification-evidence", "",
+		"Freeform evidence: command output, test results, manual checks")
+	finishCmd.Flags().StringVar(&finishDisposition, "disposition", "",
+		"Final disposition: merged | abandoned | handed-off | other (required)")
+	rootCmd.AddCommand(finishCmd)
 
 	workspaceCmd.AddCommand(workspaceLsCmd)
 	workspaceCmd.AddCommand(workspaceAddCmd)
