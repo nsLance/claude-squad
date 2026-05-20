@@ -328,6 +328,51 @@ var (
 		},
 	}
 
+	doctorCmd = &cobra.Command{
+		Use:   "doctor",
+		Short: "Lint session journals in the active workspace",
+		Long: "Walk every session journal in the active workspace and report " +
+			"record-health, closure, and staleness findings. Exit code is 1 " +
+			"if any error-severity finding is emitted.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			log.Initialize(false)
+			defer log.Close()
+
+			reg := config.LoadWorkspaceRegistry()
+			var ws *config.Workspace
+			if workspaceFlag != "" {
+				if ws = reg.Get(workspaceFlag); ws == nil {
+					ws = reg.FindByName(workspaceFlag)
+				}
+			} else {
+				currentDir, err := filepath.Abs(".")
+				if err != nil {
+					return err
+				}
+				if git.IsGitRepo(currentDir) {
+					ws, _ = resolveOrRegisterWorkspace(reg, currentDir)
+				} else {
+					ws = reg.MostRecentlyUsed()
+				}
+			}
+			if ws == nil {
+				return fmt.Errorf("no active workspace (use -W or run inside a registered repo)")
+			}
+			wsDir, err := ws.Dir()
+			if err != nil {
+				return err
+			}
+			findings := session.RunDoctor(wsDir)
+			for _, f := range findings {
+				fmt.Println(session.FormatFinding(f))
+			}
+			if session.HasErrors(findings) {
+				os.Exit(1)
+			}
+			return nil
+		},
+	}
+
 	checkpointMessage     string
 	checkpointInteractive bool
 
@@ -564,6 +609,8 @@ func init() {
 	checkpointCmd.Flags().BoolVar(&checkpointInteractive, "interactive", false,
 		"Prompt for the summary on stdin (used by the in-pane checkpoint key binding)")
 	rootCmd.AddCommand(checkpointCmd)
+
+	rootCmd.AddCommand(doctorCmd)
 
 	finishCmd.Flags().StringVar(&finishIntent, "intent", "",
 		"What this session was trying to accomplish (required)")
