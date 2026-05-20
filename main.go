@@ -295,6 +295,7 @@ var (
 	finishVerificationReason  string
 	finishVerificationEvidence string
 	finishDisposition         string
+	finishInteractive         bool
 
 	finishCmd = &cobra.Command{
 		Use:   "finish",
@@ -307,18 +308,32 @@ var (
 			log.Initialize(false)
 			defer log.Close()
 
-			f := journal.Finish{
-				Intent:       strings.TrimSpace(finishIntent),
-				Work:         strings.TrimSpace(finishWork),
-				FilesChanged: finishFiles,
-				NoFiles:      finishNoFiles,
-				Verification: &journal.Verification{
-					Status:   finishVerificationStatus,
-					Reason:   strings.TrimSpace(finishVerificationReason),
-					Evidence: strings.TrimSpace(finishVerificationEvidence),
-				},
-				Disposition: finishDisposition,
+			var f journal.Finish
+			if finishInteractive {
+				title := os.Getenv(session.EnvSession)
+				if title == "" {
+					title = "session"
+				}
+				var err error
+				f, err = session.RunFinishInteractive(title, finishFiles)
+				if err != nil {
+					return err
+				}
+			} else {
+				f = journal.Finish{
+					Intent:       strings.TrimSpace(finishIntent),
+					Work:         strings.TrimSpace(finishWork),
+					FilesChanged: finishFiles,
+					NoFiles:      finishNoFiles,
+					Verification: &journal.Verification{
+						Status:   finishVerificationStatus,
+						Reason:   strings.TrimSpace(finishVerificationReason),
+						Evidence: strings.TrimSpace(finishVerificationEvidence),
+					},
+					Disposition: finishDisposition,
+				}
 			}
+
 			if err := session.FinishFromEnv(f); err != nil {
 				return err
 			}
@@ -680,6 +695,9 @@ func init() {
 		"Freeform evidence: command output, test results, manual checks")
 	finishCmd.Flags().StringVar(&finishDisposition, "disposition", "",
 		"Final disposition: merged | abandoned | handed-off | other (required)")
+	finishCmd.Flags().BoolVar(&finishInteractive, "interactive", false,
+		"Open $EDITOR with a markdown task-record template; flag values that are "+
+			"set still seed defaults (e.g. --files pre-fills the Files Changed section)")
 	rootCmd.AddCommand(finishCmd)
 
 	workspaceCmd.AddCommand(workspaceLsCmd)
