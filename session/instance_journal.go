@@ -98,12 +98,25 @@ func (i *Instance) worktreeJournalLink() string {
 	return filepath.Join(i.gitWorktree.GetWorktreePath(), ".cs", "journal.jsonl")
 }
 
-// startJournal opens the journal and launches the transcript adapter. Called
-// once a session's tmux pane is up. Best-effort: failures are logged as
-// warnings and never break the session.
+// transcriptPath returns the on-disk path for the raw pane transcript, a
+// sibling of the journal at <session-dir>/transcript.raw. Empty when
+// journaling is disabled (no workspace or no session id).
+func (i *Instance) transcriptPath() (string, error) {
+	jp, err := i.journalPath()
+	if err != nil || jp == "" {
+		return jp, err
+	}
+	return filepath.Join(filepath.Dir(jp), "transcript.raw"), nil
+}
+
+// startJournal opens the journal, launches the agent-specific transcript
+// adapter, and turns on the LLM-agnostic pipe-pane safety net. Called once a
+// session's tmux pane is up. Best-effort: failures are logged as warnings and
+// never break the session.
 func (i *Instance) startJournal() {
 	i.ensureJournal()
 	i.startAdapter()
+	i.startTranscript()
 }
 
 // ensureJournal opens (creating if needed) this session's journal, writes the
@@ -181,6 +194,41 @@ func (i *Instance) startAdapter() {
 	i.adapterDone = done
 }
 
+// startTranscript turns on tmux pipe-pane to <session-dir>/transcript.raw so
+// every byte rendered to the pane is captured regardless of which CLI is
+// running. Co-scoped with the journal: no workspace, no transcript.
+func (i *Instance) startTranscript() {
+	if i.tmuxSession == nil {
+		return
+	}
+	path, err := i.transcriptPath()
+	if err != nil {
+		log.WarningLog.Printf("transcript path: %v", err)
+		return
+	}
+	if path == "" {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		log.WarningLog.Printf("transcript dir: %v", err)
+		return
+	}
+	if err := i.tmuxSession.PipePane(path); err != nil {
+		log.WarningLog.Printf("start transcript: %v", err)
+	}
+}
+
+// stopTranscript closes the pipe-pane. Must be called while the tmux session
+// is still alive — i.e. before Close/DetachSafely in the parent.
+func (i *Instance) stopTranscript() {
+	if i.tmuxSession == nil {
+		return
+	}
+	if err := i.tmuxSession.StopPipePane(); err != nil {
+		log.WarningLog.Printf("stop transcript: %v", err)
+	}
+}
+
 // stopJournal stops the adapter, closes the journal, and removes the worktree
 // symlink. Called on Pause and Kill. Best-effort and idempotent.
 func (i *Instance) stopJournal() {
@@ -195,6 +243,7 @@ func (i *Instance) stopJournal() {
 			i.adapterDone = nil
 		}
 	}
+	i.stopTranscript()
 	if i.journal != nil {
 		if err := i.journal.Close(); err != nil {
 			log.WarningLog.Printf("close journal: %v", err)

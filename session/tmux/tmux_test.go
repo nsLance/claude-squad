@@ -53,6 +53,30 @@ func TestSanitizeName(t *testing.T) {
 	require.Equal(t, TmuxPrefix+"abcdef01_asdf", session.sanitizedName)
 }
 
+func TestPipePane_StartAndStop(t *testing.T) {
+	var ran []string
+	exe := cmd_test.MockCmdExec{
+		RunFunc: func(cmd *exec.Cmd) error {
+			ran = append(ran, cmd2.ToString(cmd))
+			return nil
+		},
+	}
+	session := newTmuxSession("piping", "claude", "", NewMockPtyFactory(t), exe)
+
+	require.NoError(t, session.PipePane("/tmp/x with space.raw"))
+	require.NoError(t, session.StopPipePane())
+
+	require.Len(t, ran, 2)
+	require.Equal(t,
+		`tmux -L claudesquad pipe-pane -t claudesquad_piping cat >> '/tmp/x with space.raw'`,
+		ran[0],
+	)
+	require.Equal(t,
+		`tmux -L claudesquad pipe-pane -t claudesquad_piping`,
+		ran[1],
+	)
+}
+
 func TestStartTmuxSession(t *testing.T) {
 	ptyFactory := NewMockPtyFactory(t)
 

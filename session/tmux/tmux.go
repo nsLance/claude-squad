@@ -554,6 +554,22 @@ func (t *TmuxSession) DoesSessionExist() bool {
 	return t.cmdExec.Run(existsCmd) == nil
 }
 
+// PipePane starts piping the pane's output to target via `cat >> <target>`.
+// This is the LLM-agnostic safety net: regardless of which CLI runs in the
+// pane, the rendered bytes (including ANSI escapes) are appended to
+// transcript.raw next to the journal. Calling PipePane again replaces any
+// active pipe — tmux supports only one pipe per pane at a time.
+func (t *TmuxSession) PipePane(target string) error {
+	shellCmd := fmt.Sprintf("cat >> %s", shellQuote(target))
+	return t.cmdExec.Run(Command("pipe-pane", "-t", t.sanitizedName, shellCmd))
+}
+
+// StopPipePane stops any active pipe-pane on the session. Idempotent: tmux
+// reports no error when there is no pipe to close.
+func (t *TmuxSession) StopPipePane() error {
+	return t.cmdExec.Run(Command("pipe-pane", "-t", t.sanitizedName))
+}
+
 // CapturePaneContent captures the content of the tmux pane
 func (t *TmuxSession) CapturePaneContent() (string, error) {
 	// Add -e flag to preserve escape sequences (ANSI color codes)
