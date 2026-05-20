@@ -8,7 +8,9 @@ package journal
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -18,11 +20,43 @@ const SchemaVersion = 1
 
 // Event types. Exactly one `header` per file; the rest may repeat.
 const (
-	TypeHeader     = "header"     // once per file: cs_version + envelope
-	TypePrompt     = "prompt"     // a real user prompt, captured passively by an adapter
-	TypeNote       = "note"       // a manual note
-	TypeCheckpoint = "checkpoint" // user-triggered signed checkpoint
-	TypeHandoff    = "handoff"    // user-triggered cross-agent handoff
+	TypeHeader       = "header"       // once per file: cs_version + envelope
+	TypePrompt       = "prompt"       // a real user prompt, captured passively by an adapter
+	TypeNote         = "note"         // a manual note
+	TypeCheckpoint   = "checkpoint"   // user-triggered signed checkpoint
+	TypeHandoff      = "handoff"      // user-triggered cross-agent handoff
+	TypeIntent       = "intent"       // operator-curated statement of what the session is for
+	TypeVerification = "verification" // verification result, status + freeform evidence
+)
+
+// Task-status vocabulary: the lifecycle state of a session as the operator
+// sees it. Distinct from instance.Status (Running/Paused/...), which is the
+// runtime state of the tmux pane.
+const (
+	TaskStatusActive         = "active"
+	TaskStatusBlocked        = "blocked"
+	TaskStatusAwaitingReview = "awaiting-review"
+	TaskStatusFinished       = "finished"
+	TaskStatusAbandoned      = "abandoned"
+)
+
+// Verification-status vocabulary. Borrowed verbatim from miagent so cross-tool
+// audit tooling can read the same tokens. `not-run` always requires a reason.
+const (
+	VerificationStatusNotRun  = "not-run"
+	VerificationStatusPartial = "partial"
+	VerificationStatusPassed  = "passed"
+	VerificationStatusFailed  = "failed"
+	VerificationStatusNA      = "n/a"
+)
+
+// Final-disposition vocabulary, used by the (forthcoming) `finish` event to
+// record how the session landed.
+const (
+	DispositionMerged    = "merged"
+	DispositionAbandoned = "abandoned"
+	DispositionHandedOff = "handed-off"
+	DispositionOther     = "other"
 )
 
 // Agent names recorded in agent.name.
@@ -58,6 +92,43 @@ type Signature struct {
 	To   int64  `json:"to"`   // byte offset where the signed range ends (exclusive)
 }
 
+// Verification is the structured payload of a verification event. Status is
+// one of VerificationStatus*; Reason is required when Status is not-run.
+// Evidence is freeform — command output, paths, notes — and is what readers
+// actually look at to decide whether the verification is trustworthy.
+type Verification struct {
+	Status   string `json:"status"`
+	Reason   string `json:"reason,omitempty"`
+	Evidence string `json:"evidence,omitempty"`
+}
+
+// Validate reports whether v has a recognized status and, when not-run, a
+// reason. Callers should run this before Append so the journal never grows a
+// malformed verification event; the journal itself stays best-effort.
+func (v Verification) Validate() error {
+	if !ValidVerificationStatus(v.Status) {
+		return fmt.Errorf("invalid verification status %q", v.Status)
+	}
+	if v.Status == VerificationStatusNotRun && strings.TrimSpace(v.Reason) == "" {
+		return errors.New("verification status not-run requires a reason")
+	}
+	return nil
+}
+
+// ValidVerificationStatus reports whether status is one of the allowed
+// verification-status tokens. Empty is invalid.
+func ValidVerificationStatus(status string) bool {
+	switch status {
+	case VerificationStatusNotRun,
+		VerificationStatusPartial,
+		VerificationStatusPassed,
+		VerificationStatusFailed,
+		VerificationStatusNA:
+		return true
+	}
+	return false
+}
+
 // Event is one journal record. Every event carries the full envelope (V..Agent);
 // payload fields are populated per Type and omitted otherwise.
 type Event struct {
@@ -79,6 +150,10 @@ type Event struct {
 	Summary   string     `json:"summary,omitempty"`
 	GitSHA    string     `json:"git_sha,omitempty"`
 	Signature *Signature `json:"signature,omitempty"`
+
+	// Verification is set on verification events and (later) on finish
+	// events that carry an inline verification block.
+	Verification *Verification `json:"verification,omitempty"`
 }
 
 // NewID returns a roughly time-sortable event id: 10 hex chars of the current
@@ -114,4 +189,19 @@ func PromptEvent(agent AgentRef, text string) Event {
 // NoteEvent builds a manual note event.
 func NoteEvent(agent AgentRef, text string) Event {
 	return Event{Type: TypeNote, Agent: agent, Text: text}
+}
+
+// IntentEvent builds an intent event: the operator-curated statement of what
+// this session is trying to accomplish. Borrowed from miagent's required
+// Intent field. Multiple intent events may be written if the goal evolves —
+// the latest one wins for board/summary views.
+func IntentEvent(agent AgentRef, text string) Event {
+	return Event{Type: TypeIntent, Agent: agent, Text: text}
+}
+
+// VerificationEvent builds a verification event carrying a verification block
+// (status + optional reason + optional evidence). Callers should run
+// v.Validate() before Append so malformed verifications never land on disk.
+func VerificationEvent(agent AgentRef, v Verification) Event {
+	return Event{Type: TypeVerification, Agent: agent, Verification: &v}
 }
