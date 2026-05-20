@@ -328,6 +328,40 @@ var (
 		},
 	}
 
+	sessionsTSV bool
+
+	sessionsCmd = &cobra.Command{
+		Use:     "sessions",
+		Aliases: []string{"board"},
+		Short:   "List all sessions in the active workspace with their audit state",
+		Long: "Walks the active workspace's journals and projects out one row " +
+			"per session: status, last activity, agent, role/awaiting, " +
+			"verification, disposition, intent. Use --tsv for shell pipelines.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			log.Initialize(false)
+			defer log.Close()
+
+			ws, err := resolveActiveWorkspace()
+			if err != nil {
+				return err
+			}
+			wsDir, err := ws.Dir()
+			if err != nil {
+				return err
+			}
+			summaries := session.SummarizeWorkspace(wsDir)
+			if sessionsTSV {
+				fmt.Println(session.SummaryTSVHeader())
+				for _, s := range summaries {
+					fmt.Println(session.FormatSummaryTSV(s))
+				}
+				return nil
+			}
+			session.PrintSummaryTable(os.Stdout, summaries)
+			return nil
+		},
+	}
+
 	doctorCmd = &cobra.Command{
 		Use:   "doctor",
 		Short: "Lint session journals in the active workspace",
@@ -338,25 +372,9 @@ var (
 			log.Initialize(false)
 			defer log.Close()
 
-			reg := config.LoadWorkspaceRegistry()
-			var ws *config.Workspace
-			if workspaceFlag != "" {
-				if ws = reg.Get(workspaceFlag); ws == nil {
-					ws = reg.FindByName(workspaceFlag)
-				}
-			} else {
-				currentDir, err := filepath.Abs(".")
-				if err != nil {
-					return err
-				}
-				if git.IsGitRepo(currentDir) {
-					ws, _ = resolveOrRegisterWorkspace(reg, currentDir)
-				} else {
-					ws = reg.MostRecentlyUsed()
-				}
-			}
-			if ws == nil {
-				return fmt.Errorf("no active workspace (use -W or run inside a registered repo)")
+			ws, err := resolveActiveWorkspace()
+			if err != nil {
+				return err
 			}
 			wsDir, err := ws.Dir()
 			if err != nil {
@@ -502,6 +520,36 @@ var (
 
 // resolveOrRegisterWorkspace finds the workspace for the git repo containing
 // dirOrRepo, registering it silently if it doesn't exist.
+// resolveActiveWorkspace picks the workspace `cs doctor`, `cs sessions`, and
+// other workspace-scoped commands should operate on: --workspace flag if set,
+// else the workspace owning the current directory, else the most-recently-
+// used one. Returns an error when none of those resolves to a workspace.
+func resolveActiveWorkspace() (*config.Workspace, error) {
+	reg := config.LoadWorkspaceRegistry()
+	if workspaceFlag != "" {
+		if ws := reg.Get(workspaceFlag); ws != nil {
+			return ws, nil
+		}
+		if ws := reg.FindByName(workspaceFlag); ws != nil {
+			return ws, nil
+		}
+		return nil, fmt.Errorf("workspace not found: %s (use `cs workspace ls`)", workspaceFlag)
+	}
+	currentDir, err := filepath.Abs(".")
+	if err != nil {
+		return nil, err
+	}
+	if git.IsGitRepo(currentDir) {
+		if ws, err := resolveOrRegisterWorkspace(reg, currentDir); err == nil {
+			return ws, nil
+		}
+	}
+	if ws := reg.MostRecentlyUsed(); ws != nil {
+		return ws, nil
+	}
+	return nil, fmt.Errorf("no active workspace (use -W or run inside a registered repo)")
+}
+
 func resolveOrRegisterWorkspace(reg *config.WorkspaceRegistry, dirOrRepo string) (*config.Workspace, error) {
 	root, err := git.FindGitRepoRoot(dirOrRepo)
 	if err != nil {
@@ -611,6 +659,10 @@ func init() {
 	rootCmd.AddCommand(checkpointCmd)
 
 	rootCmd.AddCommand(doctorCmd)
+
+	sessionsCmd.Flags().BoolVar(&sessionsTSV, "tsv", false,
+		"Emit one tab-separated row per session, prefixed with a header line")
+	rootCmd.AddCommand(sessionsCmd)
 
 	finishCmd.Flags().StringVar(&finishIntent, "intent", "",
 		"What this session was trying to accomplish (required)")
