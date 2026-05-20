@@ -28,6 +28,7 @@ const (
 	TypeIntent       = "intent"       // operator-curated statement of what the session is for
 	TypeVerification = "verification" // verification result, status + freeform evidence
 	TypeDecision     = "decision"     // durable design choice, MADR-shaped payload
+	TypeFinish       = "finish"       // session closeout with the required-five payload
 )
 
 // Task-status vocabulary: the lifecycle state of a session as the operator
@@ -91,6 +92,59 @@ type Signature struct {
 	Hash string `json:"hash"` // hex sha256 of this checkpoint
 	From int64  `json:"from"` // byte offset in journal.jsonl where the signed range starts
 	To   int64  `json:"to"`   // byte offset where the signed range ends (exclusive)
+}
+
+// Finish is the structured payload of a finish event: a session's closeout
+// record carrying the required-five fields borrowed from miagent. Validate
+// enforces every gate — callers MUST run it before Append. Best-effort
+// applies to the storage layer, not to the closure contract.
+//
+// FilesChanged carries the path-per-line list; NoFiles is the explicit
+// "no files changed" assertion (miagent treats the literal phrase as
+// non-empty and valid, and we mirror that as a bool to keep the
+// distinction unambiguous in JSON).
+type Finish struct {
+	Intent       string        `json:"intent"`
+	Work         string        `json:"work"`
+	FilesChanged []string      `json:"files_changed,omitempty"`
+	NoFiles      bool          `json:"no_files,omitempty"`
+	Verification *Verification `json:"verification"`
+	Disposition  string        `json:"disposition"`
+}
+
+// Validate enforces the required-five gate. On failure it returns an error
+// whose message names exactly which field is missing or invalid, so a CLI
+// can surface it without rewriting the message.
+func (f Finish) Validate() error {
+	if strings.TrimSpace(f.Intent) == "" {
+		return errors.New("finish: intent is required")
+	}
+	if strings.TrimSpace(f.Work) == "" {
+		return errors.New("finish: work performed is required")
+	}
+	if len(f.FilesChanged) == 0 && !f.NoFiles {
+		return errors.New("finish: files_changed list is required (or set no_files=true)")
+	}
+	if f.Verification == nil {
+		return errors.New("finish: verification block is required")
+	}
+	if err := f.Verification.Validate(); err != nil {
+		return fmt.Errorf("finish: %w", err)
+	}
+	if !ValidDisposition(f.Disposition) {
+		return fmt.Errorf("finish: invalid disposition %q", f.Disposition)
+	}
+	return nil
+}
+
+// ValidDisposition reports whether d is one of the allowed final-disposition
+// tokens. Empty is invalid.
+func ValidDisposition(d string) bool {
+	switch d {
+	case DispositionMerged, DispositionAbandoned, DispositionHandedOff, DispositionOther:
+		return true
+	}
+	return false
 }
 
 // Decision is the structured payload of a decision event: a durable design
@@ -209,6 +263,9 @@ type Event struct {
 	// Decision is set on decision events: title + context + decision +
 	// consequences + considered options (MADR-lite shape).
 	Decision *Decision `json:"decision,omitempty"`
+
+	// Finish is set on finish events: the required-five closeout payload.
+	Finish *Finish `json:"finish,omitempty"`
 }
 
 // NewID returns a roughly time-sortable event id: 10 hex chars of the current
@@ -272,4 +329,11 @@ func HandoffEvent(agent AgentRef, summary string, h Handoff) Event {
 // Callers should run d.Validate() before Append.
 func DecisionEvent(agent AgentRef, d Decision) Event {
 	return Event{Type: TypeDecision, Agent: agent, Decision: &d}
+}
+
+// FinishEvent builds a finish event. Callers MUST run f.Validate() first —
+// the journal stays best-effort, but the finish contract is the gate that
+// makes the journal an audit artifact rather than a transcript.
+func FinishEvent(agent AgentRef, f Finish) Event {
+	return Event{Type: TypeFinish, Agent: agent, Finish: &f}
 }

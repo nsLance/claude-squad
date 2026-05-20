@@ -180,6 +180,102 @@ func TestDecisionEvent_Marshal(t *testing.T) {
 	}
 }
 
+func TestValidDisposition(t *testing.T) {
+	for _, d := range []string{DispositionMerged, DispositionAbandoned, DispositionHandedOff, DispositionOther} {
+		if !ValidDisposition(d) {
+			t.Errorf("%q should be valid", d)
+		}
+	}
+	for _, d := range []string{"", "MERGED", "shipped", "todo"} {
+		if ValidDisposition(d) {
+			t.Errorf("%q should be invalid", d)
+		}
+	}
+}
+
+func TestFinish_Validate(t *testing.T) {
+	ok := Finish{
+		Intent:       "land the codex adapter",
+		Work:         "wrote adapter + tests; wired into instance_journal",
+		FilesChanged: []string{"session/journal/adapter_codex.go", "session/instance_journal.go"},
+		Verification: &Verification{Status: VerificationStatusPassed, Evidence: "go test ./..."},
+		Disposition:  DispositionMerged,
+	}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("happy path: %v", err)
+	}
+
+	// "no files changed" is a legitimate finish — mirror miagent.
+	noFiles := ok
+	noFiles.FilesChanged = nil
+	noFiles.NoFiles = true
+	if err := noFiles.Validate(); err != nil {
+		t.Fatalf("no_files: %v", err)
+	}
+
+	// Every required field must reject its absence with a message that
+	// names the field, so the CLI can surface miagent-style errors.
+	cases := []struct {
+		name  string
+		mut   func(f *Finish)
+		token string
+	}{
+		{"missing intent", func(f *Finish) { f.Intent = "" }, "intent"},
+		{"blank intent", func(f *Finish) { f.Intent = "   " }, "intent"},
+		{"missing work", func(f *Finish) { f.Work = "" }, "work"},
+		{"missing files and no_files=false", func(f *Finish) { f.FilesChanged = nil; f.NoFiles = false }, "files_changed"},
+		{"missing verification", func(f *Finish) { f.Verification = nil }, "verification"},
+		{"bad verification status", func(f *Finish) { f.Verification = &Verification{Status: "ok"} }, "invalid verification status"},
+		{"not-run without reason", func(f *Finish) { f.Verification = &Verification{Status: VerificationStatusNotRun} }, "reason"},
+		{"missing disposition", func(f *Finish) { f.Disposition = "" }, "disposition"},
+		{"bad disposition", func(f *Finish) { f.Disposition = "shipped" }, "disposition"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := ok
+			f.Verification = &Verification{Status: VerificationStatusPassed}
+			c.mut(&f)
+			err := f.Validate()
+			if err == nil {
+				t.Fatalf("expected error containing %q", c.token)
+			}
+			if !strings.Contains(err.Error(), c.token) {
+				t.Errorf("error %q does not contain %q", err.Error(), c.token)
+			}
+		})
+	}
+}
+
+func TestFinishEvent_Marshal(t *testing.T) {
+	f := Finish{
+		Intent:       "x",
+		Work:         "y",
+		FilesChanged: []string{"a.go", "b.go"},
+		Verification: &Verification{Status: VerificationStatusPassed, Evidence: "tests pass"},
+		Disposition:  DispositionMerged,
+	}
+	ev := FinishEvent(AgentRef{Name: AgentHuman}, f)
+	if ev.Type != TypeFinish || ev.Finish == nil || ev.Finish.Disposition != DispositionMerged {
+		t.Fatalf("FinishEvent shape wrong: %+v", ev)
+	}
+	b, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{
+		`"finish":{`,
+		`"intent":"x"`,
+		`"work":"y"`,
+		`"files_changed":["a.go","b.go"]`,
+		`"verification":{"status":"passed"`,
+		`"disposition":"merged"`,
+	} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("marshaled event missing %q: %s", want, b)
+		}
+	}
+}
+
 func TestIntentAndVerificationEvent_Marshal(t *testing.T) {
 	intent := IntentEvent(AgentRef{Name: AgentHuman}, "ship the codex adapter")
 	if intent.Type != TypeIntent || intent.Text != "ship the codex adapter" {
