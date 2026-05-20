@@ -438,6 +438,8 @@ func (m *home) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case hideErrMsg:
 		m.errBox.Clear()
+	case errMsg:
+		return m, m.handleError(msg)
 	case previewTickMsg:
 		cmd := m.instanceChanged()
 		return m, tea.Batch(
@@ -1102,6 +1104,12 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	case keys.KeyCollapseWorkspace:
 		m.list.ToggleCollapseCurrent()
 		return m, nil
+	case keys.KeyFinish:
+		selected := m.list.GetSelectedInstance()
+		if selected == nil || selected.Status == session.Loading {
+			return m, nil
+		}
+		return m, m.runFinishInteractive(selected)
 	case keys.KeyAddWorkspace:
 		m.textInputOverlay = overlay.NewTextInputOverlay(
 			"Add workspace (enter a path; new dirs are git-init'd automatically)",
@@ -1332,6 +1340,30 @@ func tickUpdateMetadataCmd(active []*session.Instance) tea.Cmd {
 
 // handleError handles all errors which get bubbled up to the app. sets the error message. We return a callback tea.Cmd that returns a hideErrMsg message
 // which clears the error message after 3 seconds.
+// runFinishInteractive suspends the TUI and execs `cs finish --interactive`
+// for the selected session, with CS_* env vars populated from the instance
+// so the subprocess resolves the right journal. Quitting the editor without
+// saving aborts harmlessly; a save+quit either records a finish event or
+// preserves the temp file for the operator to retry.
+func (m *home) runFinishInteractive(inst *session.Instance) tea.Cmd {
+	exe, err := os.Executable()
+	if err != nil {
+		return m.handleError(fmt.Errorf("locate cs binary: %w", err))
+	}
+	cmd := exec.Command(exe, "finish", "--interactive")
+	cmd.Env = append(os.Environ(), inst.EnvForExternalProcess()...)
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		if err != nil {
+			return errMsg(err)
+		}
+		return nil
+	})
+}
+
+// errMsg is a tea.Msg wrapper for an error returned from a suspended
+// subprocess, routed through handleError to populate the err box.
+type errMsg error
+
 func (m *home) handleError(err error) tea.Cmd {
 	log.ErrorLog.Printf("%v", err)
 	m.errBox.SetError(err)

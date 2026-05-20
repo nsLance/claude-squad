@@ -36,6 +36,14 @@ var journalDirSanitizer = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 // goroutine to exit before closing the journal out from under it.
 const adapterStopTimeout = 2 * time.Second
 
+// EnvForExternalProcess returns the CS_* variables describing this session,
+// suitable for layering on top of os.Environ() when launching a subprocess
+// that needs to operate on the session (e.g. `cs finish --interactive`
+// triggered from the TUI). Mirrors the env the tmux pane already sees.
+func (i *Instance) EnvForExternalProcess() []string {
+	return i.injectCSEnv(nil)
+}
+
 // injectCSEnv mints the session id if needed and appends the CS_* variables to
 // env. It is applied to the env handed to every tmux session start, so the
 // values reach the pane whether or not journaling is enabled.

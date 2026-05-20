@@ -40,6 +40,11 @@ const (
 	KeyCollapseWorkspace
 	// KeyAddWorkspace opens an overlay for adding a new workspace by path.
 	KeyAddWorkspace
+	// KeyFinish suspends the TUI to run `cs finish --interactive` for the
+	// selected session — opens $EDITOR with a task-record template, then
+	// writes a finish event on save+quit. Requires confirm via the editor's
+	// own save action; quitting without saving aborts.
+	KeyFinish
 )
 
 // GlobalKeyStringsMap is a global, immutable map string to keybinding.
@@ -66,6 +71,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"V":          KeyViewFilter,
 	"z":          KeyCollapseWorkspace,
 	"A":          KeyAddWorkspace,
+	"F":          KeyFinish,
 }
 
 // GlobalkeyBindings is a global, immutable map of KeyName tot keybinding.
@@ -145,6 +151,10 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyAddWorkspace: key.NewBinding(
 		key.WithKeys("A"),
 		key.WithHelp("A", "add workspace"),
+	),
+	KeyFinish: key.NewBinding(
+		key.WithKeys("F"),
+		key.WithHelp("F", "finish (audit closeout)"),
 	),
 
 	// -- Special keybindings --

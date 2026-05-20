@@ -52,6 +52,7 @@ func (h helpTypeGeneral) toContent() string {
 		keyStyle.Render("p")+descStyle.Render("         - Commit and push branch to github"),
 		keyStyle.Render("c")+descStyle.Render("         - Checkout: commit changes and pause session"),
 		keyStyle.Render("r")+descStyle.Render("         - Resume a paused session"),
+		keyStyle.Render("F")+descStyle.Render("         - Finish: opens $EDITOR with a closeout template (records the audit payload)"),
 		"",
 		headerStyle.Render("Workspaces:"),
 		keyStyle.Render("A")+descStyle.Render("         - Add a workspace (existing dir or new — git-init's new dirs)"),

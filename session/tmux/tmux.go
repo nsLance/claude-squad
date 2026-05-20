@@ -44,31 +44,41 @@ func DefaultSocketCommand(args ...string) *exec.Cmd {
 	return exec.Command("tmux", args...)
 }
 
-// InstallCheckpointBindings installs the in-pane checkpoint key bindings on the
-// claude-squad tmux server: <prefix> k and the prefix-less C-Space each open a
-// display-popup running `cs checkpoint --interactive`. Because tmux bindings
-// fire before the pane sees the keys, this works from inside any agent CLI.
+// InstallSessionBindings installs claude-squad's in-pane key bindings on the
+// tmux server:
 //
-// The bindings are server-wide, which is safe only because claude-squad runs on
-// its own socket (SocketName). Best-effort and idempotent: it is re-run on each
-// session start, and failures are logged, never fatal.
-func InstallCheckpointBindings(cmdExec cmd.Executor) {
+//   - <prefix> k and C-Space → `cs checkpoint --interactive` (one-line popup)
+//   - <prefix> F             → `cs finish --interactive`     (editor popup)
+//
+// Because tmux bindings fire before the pane sees the keys, all three work
+// from inside any agent CLI. The finish binding deliberately requires the
+// tmux prefix — it's destructive (closes the session journal) and rarer, so
+// no global no-prefix variant is added.
+//
+// The bindings are server-wide, which is safe only because claude-squad runs
+// on its own socket (SocketName). Best-effort and idempotent: re-run on each
+// session start, failures logged not fatal.
+func InstallSessionBindings(cmdExec cmd.Executor) {
 	exe, err := os.Executable()
 	if err != nil {
-		log.WarningLog.Printf("checkpoint bindings: cannot resolve executable: %v", err)
+		log.WarningLog.Printf("session bindings: cannot resolve executable: %v", err)
 		return
 	}
-	// Run inside a popup; -E closes it when `cs checkpoint` exits.
-	popup := []string{"display-popup", "-E", "-w", "60%", "-h", "40%",
+	// Two popup shapes: the checkpoint popup is small (one-liner input);
+	// the finish popup is taller so the editor has room to breathe.
+	checkpointPopup := []string{"display-popup", "-E", "-w", "60%", "-h", "40%",
 		shellQuote(exe) + " checkpoint --interactive"}
+	finishPopup := []string{"display-popup", "-E", "-w", "80%", "-h", "80%",
+		shellQuote(exe) + " finish --interactive"}
 
 	bindings := [][]string{
-		append([]string{"bind-key", "k"}, popup...),             // <prefix> k
-		append([]string{"bind-key", "-n", "C-Space"}, popup...), // C-Space, no prefix
+		append([]string{"bind-key", "k"}, checkpointPopup...),             // <prefix> k
+		append([]string{"bind-key", "-n", "C-Space"}, checkpointPopup...), // C-Space, no prefix
+		append([]string{"bind-key", "F"}, finishPopup...),                 // <prefix> F
 	}
 	for _, args := range bindings {
 		if err := cmdExec.Run(Command(args...)); err != nil {
-			log.WarningLog.Printf("checkpoint binding: %v", err)
+			log.WarningLog.Printf("session binding: %v", err)
 		}
 	}
 }
@@ -232,8 +242,8 @@ func (t *TmuxSession) Start(workDir string, env []string) error {
 		log.InfoLog.Printf("Warning: failed to enable mouse scrolling for session %s: %v", t.sanitizedName, err)
 	}
 
-	// Install the in-pane checkpoint key bindings (server-wide on our socket).
-	InstallCheckpointBindings(t.cmdExec)
+	// Install the in-pane key bindings (server-wide on our socket).
+	InstallSessionBindings(t.cmdExec)
 
 	err = t.Restore()
 	if err != nil {
