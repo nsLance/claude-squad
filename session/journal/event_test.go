@@ -117,6 +117,69 @@ func TestHandoffEvent_Marshal(t *testing.T) {
 	}
 }
 
+func TestDecision_Validate(t *testing.T) {
+	cases := []struct {
+		name string
+		d    Decision
+		err  string
+	}{
+		{"empty rejected", Decision{}, "title"},
+		{"title only", Decision{Title: "use sqlite"}, "decision body"},
+		{"blank title", Decision{Title: "   ", Decision: "x"}, "title"},
+		{"blank body", Decision{Title: "use sqlite", Decision: "  "}, "decision body"},
+		{"minimal valid", Decision{Title: "use sqlite", Decision: "ship as embedded store"}, ""},
+		{"full payload", Decision{
+			Title:        "use sqlite for the worklog index",
+			Context:      "tsv is fragile under concurrent appends",
+			Decision:     "ship sqlite with WAL",
+			Consequences: "binary now links libsqlite, journal compaction needs vacuum",
+			Options:      "tsv (current); jsonl; sqlite",
+		}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := c.d.Validate()
+			if c.err == "" {
+				if err != nil {
+					t.Fatalf("got error %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), c.err) {
+				t.Fatalf("got %v, want error containing %q", err, c.err)
+			}
+		})
+	}
+}
+
+func TestDecisionEvent_Marshal(t *testing.T) {
+	d := Decision{Title: "use sqlite", Decision: "ship as embedded store", Context: "tsv fragile"}
+	ev := DecisionEvent(AgentRef{Name: AgentHuman}, d)
+	if ev.Type != TypeDecision || ev.Decision == nil || ev.Decision.Title != "use sqlite" {
+		t.Fatalf("DecisionEvent shape wrong: %+v", ev)
+	}
+	b, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{
+		`"decision":{`,
+		`"title":"use sqlite"`,
+		`"decision":"ship as embedded store"`,
+		`"context":"tsv fragile"`,
+	} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("marshaled event missing %q: %s", want, b)
+		}
+	}
+	// Omitted optional fields must not appear in the encoding.
+	for _, omit := range []string{`"consequences"`, `"options"`} {
+		if strings.Contains(string(b), omit) {
+			t.Errorf("optional field unexpectedly present: %s in %s", omit, b)
+		}
+	}
+}
+
 func TestIntentAndVerificationEvent_Marshal(t *testing.T) {
 	intent := IntentEvent(AgentRef{Name: AgentHuman}, "ship the codex adapter")
 	if intent.Type != TypeIntent || intent.Text != "ship the codex adapter" {

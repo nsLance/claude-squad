@@ -27,6 +27,7 @@ const (
 	TypeHandoff      = "handoff"      // user-triggered cross-agent handoff
 	TypeIntent       = "intent"       // operator-curated statement of what the session is for
 	TypeVerification = "verification" // verification result, status + freeform evidence
+	TypeDecision     = "decision"     // durable design choice, MADR-shaped payload
 )
 
 // Task-status vocabulary: the lifecycle state of a session as the operator
@@ -90,6 +91,30 @@ type Signature struct {
 	Hash string `json:"hash"` // hex sha256 of this checkpoint
 	From int64  `json:"from"` // byte offset in journal.jsonl where the signed range starts
 	To   int64  `json:"to"`   // byte offset where the signed range ends (exclusive)
+}
+
+// Decision is the structured payload of a decision event: a durable design
+// choice made during the session. Shape borrowed from a lean MADR template
+// so projects can render decisions back out as markdown without depending
+// on ADR tooling. Title and Decision are required; the rest are optional.
+type Decision struct {
+	Title        string `json:"title"`
+	Context      string `json:"context,omitempty"`      // why this needed to be decided
+	Decision     string `json:"decision"`               // the actual choice made
+	Consequences string `json:"consequences,omitempty"` // what changes as a result
+	Options      string `json:"options,omitempty"`      // alternatives considered (freeform)
+}
+
+// Validate enforces that a decision carries a title and the decision body.
+// Run before Append; the journal itself stays best-effort.
+func (d Decision) Validate() error {
+	if strings.TrimSpace(d.Title) == "" {
+		return errors.New("decision title is required")
+	}
+	if strings.TrimSpace(d.Decision) == "" {
+		return errors.New("decision body is required")
+	}
+	return nil
 }
 
 // Handoff is the structured payload of a handoff event, naming the current
@@ -180,6 +205,10 @@ type Event struct {
 	// Handoff is set on handoff events: the role/awaiting/phase/next
 	// payload concretized from miagent's task-record metadata.
 	Handoff *Handoff `json:"handoff,omitempty"`
+
+	// Decision is set on decision events: title + context + decision +
+	// consequences + considered options (MADR-lite shape).
+	Decision *Decision `json:"decision,omitempty"`
 }
 
 // NewID returns a roughly time-sortable event id: 10 hex chars of the current
@@ -237,4 +266,10 @@ func VerificationEvent(agent AgentRef, v Verification) Event {
 // h.Validate() before Append.
 func HandoffEvent(agent AgentRef, summary string, h Handoff) Event {
 	return Event{Type: TypeHandoff, Agent: agent, Summary: summary, Handoff: &h}
+}
+
+// DecisionEvent builds a decision event carrying a MADR-lite payload.
+// Callers should run d.Validate() before Append.
+func DecisionEvent(agent AgentRef, d Decision) Event {
+	return Event{Type: TypeDecision, Agent: agent, Decision: &d}
 }
