@@ -58,6 +58,65 @@ func TestVerification_Validate(t *testing.T) {
 	}
 }
 
+func TestHandoff_Validate(t *testing.T) {
+	cases := []struct {
+		name string
+		h    Handoff
+		err  string
+	}{
+		{"empty rejected", Handoff{}, "at least one"},
+		{"role only", Handoff{Role: "developer"}, ""},
+		{"awaiting only", Handoff{Awaiting: "qa"}, ""},
+		{"phase only", Handoff{Phase: "verification"}, ""},
+		{"next only", Handoff{Next: "ship the codex adapter"}, ""},
+		{"full payload", Handoff{Role: "developer", Awaiting: "qa", Phase: "awaiting-qa", Next: "validate"}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := c.h.Validate()
+			if c.err == "" {
+				if err != nil {
+					t.Fatalf("got error %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), c.err) {
+				t.Fatalf("got %v, want error containing %q", err, c.err)
+			}
+		})
+	}
+}
+
+func TestHandoffEvent_Marshal(t *testing.T) {
+	h := Handoff{Role: "developer", Awaiting: "qa", Phase: "awaiting-qa", Next: "validate throttle behavior"}
+	ev := HandoffEvent(AgentRef{Name: AgentCS}, "implementation complete; unit tests in place", h)
+	if ev.Type != TypeHandoff || ev.Summary == "" || ev.Handoff == nil || ev.Handoff.Role != "developer" {
+		t.Fatalf("HandoffEvent shape wrong: %+v", ev)
+	}
+	b, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal handoff event: %v", err)
+	}
+	for _, want := range []string{
+		`"summary":"implementation complete`,
+		`"handoff":{`,
+		`"role":"developer"`,
+		`"awaiting":"qa"`,
+		`"phase":"awaiting-qa"`,
+		`"next":"validate throttle behavior"`,
+	} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("marshaled event missing %q: %s", want, b)
+		}
+	}
+
+	// Other event types must not leak a handoff field.
+	pb, _ := json.Marshal(PromptEvent(AgentRef{Name: AgentClaudeCode}, "hi"))
+	if strings.Contains(string(pb), `"handoff"`) {
+		t.Errorf("prompt event leaked handoff field: %s", pb)
+	}
+}
+
 func TestIntentAndVerificationEvent_Marshal(t *testing.T) {
 	intent := IntentEvent(AgentRef{Name: AgentHuman}, "ship the codex adapter")
 	if intent.Type != TypeIntent || intent.Text != "ship the codex adapter" {

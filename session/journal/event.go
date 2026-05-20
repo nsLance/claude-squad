@@ -92,6 +92,28 @@ type Signature struct {
 	To   int64  `json:"to"`   // byte offset where the signed range ends (exclusive)
 }
 
+// Handoff is the structured payload of a handoff event, naming the current
+// role after the transition, the queued next role, a lifecycle phase, and
+// the concrete next action. The latest handoff in a journal is the session's
+// current coordination state — append-only means the change history falls
+// out for free without mutating earlier lines.
+type Handoff struct {
+	Role     string `json:"role,omitempty"`     // current owner AFTER this handoff
+	Awaiting string `json:"awaiting,omitempty"` // queued next owner (empty = within-task)
+	Phase    string `json:"phase,omitempty"`    // free-form lifecycle phase, e.g. awaiting-qa
+	Next     string `json:"next,omitempty"`     // concrete next action for the queued owner
+}
+
+// Validate rejects an empty handoff — at least one state-changing field must
+// be set, otherwise the event records nothing. Callers should run this
+// before Append; the journal stays best-effort.
+func (h Handoff) Validate() error {
+	if h.Role == "" && h.Awaiting == "" && h.Phase == "" && h.Next == "" {
+		return errors.New("handoff must set at least one of role, awaiting, phase, next")
+	}
+	return nil
+}
+
 // Verification is the structured payload of a verification event. Status is
 // one of VerificationStatus*; Reason is required when Status is not-run.
 // Evidence is freeform — command output, paths, notes — and is what readers
@@ -154,6 +176,10 @@ type Event struct {
 	// Verification is set on verification events and (later) on finish
 	// events that carry an inline verification block.
 	Verification *Verification `json:"verification,omitempty"`
+
+	// Handoff is set on handoff events: the role/awaiting/phase/next
+	// payload concretized from miagent's task-record metadata.
+	Handoff *Handoff `json:"handoff,omitempty"`
 }
 
 // NewID returns a roughly time-sortable event id: 10 hex chars of the current
@@ -204,4 +230,11 @@ func IntentEvent(agent AgentRef, text string) Event {
 // v.Validate() before Append so malformed verifications never land on disk.
 func VerificationEvent(agent AgentRef, v Verification) Event {
 	return Event{Type: TypeVerification, Agent: agent, Verification: &v}
+}
+
+// HandoffEvent builds a handoff event. summary is the board one-liner; h
+// carries the role/awaiting/phase/next state change. Callers should run
+// h.Validate() before Append.
+func HandoffEvent(agent AgentRef, summary string, h Handoff) Event {
+	return Event{Type: TypeHandoff, Agent: agent, Summary: summary, Handoff: &h}
 }
