@@ -175,8 +175,11 @@ func (i *Instance) startAdapter() {
 	case strings.HasSuffix(i.Program, tmux.ProgramClaude):
 		env, _ := i.resolveEnv()
 		adapter = journal.NewClaudeAdapter(claudeConfigDir(env), i.gitWorktree.GetWorktreePath(), "")
+	case strings.HasSuffix(i.Program, tmux.ProgramCodex):
+		env, _ := i.resolveEnv()
+		adapter = journal.NewCodexAdapter(codexHome(env), i.gitWorktree.GetWorktreePath(), "")
 	default:
-		return // no adapter for this agent yet
+		return // no structured adapter for this agent — pipe-pane safety net still runs
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -258,15 +261,26 @@ func (i *Instance) stopJournal() {
 // claudeConfigDir resolves claude-code's config dir: CLAUDE_CONFIG_DIR from the
 // session env if set, else ~/.claude.
 func claudeConfigDir(env []string) string {
-	const key = "CLAUDE_CONFIG_DIR="
+	return envDirOrHomeDefault(env, "CLAUDE_CONFIG_DIR", ".claude")
+}
+
+// codexHome resolves codex's config dir: CODEX_HOME from the session env if
+// set, else ~/.codex.
+func codexHome(env []string) string {
+	return envDirOrHomeDefault(env, "CODEX_HOME", ".codex")
+}
+
+// envDirOrHomeDefault returns env[key] if set, else <home>/<defaultName>.
+func envDirOrHomeDefault(env []string, key, defaultName string) string {
+	prefix := key + "="
 	for _, kv := range env {
-		if v, ok := strings.CutPrefix(kv, key); ok && v != "" {
+		if v, ok := strings.CutPrefix(kv, prefix); ok && v != "" {
 			return v
 		}
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ".claude"
+		return defaultName
 	}
-	return filepath.Join(home, ".claude")
+	return filepath.Join(home, defaultName)
 }

@@ -23,6 +23,7 @@ const ProgramClaude = "claude"
 
 const ProgramAider = "aider"
 const ProgramGemini = "gemini"
+const ProgramCodex = "codex"
 
 // SocketName is the dedicated tmux server socket claude-squad runs on. Using
 // our own socket (tmux -L) isolates cs sessions — and any server-wide options
