@@ -40,8 +40,35 @@ tests the wrong thing — always commit first, then rebuild `cs-edge`.
 
 ## Layout
 
-- `session/` — `Instance`, `TmuxSession`, `GitWorktree`, storage
+- `session/` — `Instance`, `TmuxSession`, `GitWorktree`, storage; also the
+  journal package (`session/journal/`), checkpoint/finish/doctor/summary
+  layers, and the markdown task-record template (`finish_template.go`).
 - `config/` — config + workspace registry/profiles
 - `app/` — Bubble Tea TUI event loop
 - `ui/` — list, preview, menu, tabs, overlays
 - `daemon/` — autoyes daemon
+
+## Subcommands the fork adds
+
+Beyond `cs <no args>` (TUI) and `cs debug|reset|version|completion`, this fork
+ships:
+
+- `cs workspace ls|add|rm|edit` — manage the per-repo workspaces.
+- `cs checkpoint [-m … | --interactive]` — record a signed checkpoint;
+  designed to run inside a session pane, resolves identity via `CS_*` env vars.
+- `cs finish` — closeout with the required-five audit payload (Intent / Work /
+  Files / Verification / Disposition); refuses partial payloads. Flag form for
+  agents, `--interactive` for humans (opens `$EDITOR` with a markdown template).
+- `cs sessions` (alias `cs board`) — workspace-level rollup; `--tsv` for pipes.
+- `cs doctor` — lint workspace journals (record-health, closure, staleness).
+- `cs migrate-socket` — back-compat: recreate sessions on the dedicated
+  `-L claudesquad` socket.
+
+In-pane chord bindings (installed by `InstallSessionBindings` in
+`session/tmux/tmux.go`):
+
+- `<tmux-prefix> k`, `C-Space` → `cs checkpoint --interactive` in a popup.
+- `<tmux-prefix> F`            → `cs finish --interactive` in a popup.
+
+TUI keybindings live in `keys/keys.go`; the bottom-menu surfacing lives in
+`ui/menu.go:keyMenuGroup`. New keys must be added to BOTH for them to render.

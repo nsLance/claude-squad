@@ -57,16 +57,24 @@ Usage:
   cs [command]
 
 Available Commands:
-  completion  Generate the autocompletion script for the specified shell
-  debug       Print debug information like config paths
-  help        Help about any command
-  reset       Reset all stored instances
-  version     Print the version number of claude-squad
+  board           Alias for `sessions`
+  checkpoint      Record a signed checkpoint in the current session's journal
+  completion      Generate the autocompletion script for the specified shell
+  debug           Print debug information like config paths
+  doctor          Lint session journals in the active workspace
+  finish          Close out the current session's journal with the required-five audit payload
+  help            Help about any command
+  migrate-socket  Recreate any sessions on the dedicated tmux socket
+  reset           Reset all stored instances
+  sessions        List every session in the active workspace with its audit state
+  version         Print the version number of claude-squad
+  workspace       Manage claude-squad workspaces
 
 Flags:
-  -y, --autoyes          [experimental] If enabled, all instances will automatically accept prompts for claude code & aider
-  -h, --help             help for claude-squad
-  -p, --program string   Program to run in new instances (e.g. 'aider --model ollama_chat/gemma3:1b')
+  -y, --autoyes            [experimental] If enabled, all instances will automatically accept prompts for claude code & aider
+  -h, --help               help for claude-squad
+  -p, --program string     Program to run in new instances (e.g. 'aider --model ollama_chat/gemma3:1b')
+  -W, --workspace string   Workspace id or name to operate on (auto-detected from CWD if unset)
 ```
 
 Run the application with:
@@ -95,20 +103,76 @@ The menu at the bottom of the screen shows available commands:
 - `n` - Create a new session
 - `N` - Create a new session with a prompt
 - `D` - Kill (delete) the selected session
+- `R` - Restart a session whose agent process exited (keeps the worktree)
 - `↑/j`, `↓/k` - Navigate between sessions
 
 ##### Actions
 - `↵/o` - Attach to the selected session to reprompt
 - `ctrl-q` - Detach from session
-- `s` - Commit and push branch to github
+- `p` - Commit and push branch to github
 - `c` - Checkout. Commits changes and pauses the session
 - `r` - Resume a paused session
+- `F` - Finish: opens `$EDITOR` with a closeout template; records the audit payload to the session journal
 - `?` - Show help menu
+
+##### Workspaces
+- `A` - Add a workspace (existing dir or new — git-init's new dirs automatically)
+- `W` - Switch active workspace (where new sessions land)
+- `V` - Cycle workspace view filter (All → ws1 → ws2 → All)
+- `z` - Fold/unfold the workspace group containing the current selection
 
 ##### Navigation
 - `tab` - Switch between preview tab and diff tab
 - `q` - Quit the application
 - `shift-↓/↑` - scroll in diff view
+
+##### In-pane chord bindings (work inside any agent CLI running in a cs session)
+Because the bindings live on the dedicated tmux server, they fire before the
+pane sees the key — they work from inside claude, codex, aider, or a plain shell.
+
+- `<tmux-prefix> k` or `C-Space` - Open `cs checkpoint --interactive` in a popup
+- `<tmux-prefix> F`              - Open `cs finish --interactive` in a popup
+
+### Audit journal
+
+Every session keeps an append-only JSONL journal under
+`~/.claude-squad/workspaces/<id>/sessions/<slug>/journal.jsonl`, symlinked into
+the worktree at `.cs/journal.jsonl`. The journal records prompts (captured
+passively from supported agents), notes, signed checkpoints, decisions,
+handoffs, and the final closeout — enough to reconstruct who decided what
+across multiple agents working the same task.
+
+Supported agents and what gets captured:
+
+| Agent       | Prompts captured | Source                                                |
+|-------------|------------------|-------------------------------------------------------|
+| claude-code | yes              | `~/.claude/projects/<encoded-cwd>/*.jsonl`            |
+| codex       | yes              | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`         |
+| aider / gemini / shell | no    | raw pane bytes still capture in `transcript.raw`      |
+
+Every session also gets a `transcript.raw` next to the journal that captures
+the rendered pane bytes via `tmux pipe-pane` — the LLM-agnostic safety net
+for agents without a structured-transcript adapter.
+
+##### CLI commands inside a session pane
+
+Every cs session injects `CS_*` env vars into its tmux pane, so these resolve
+the right journal automatically without flags:
+
+| Command                            | What it does                                                                       |
+|------------------------------------|------------------------------------------------------------------------------------|
+| `cs checkpoint -m "<summary>"`     | Record a signed checkpoint chained to the previous one. `--interactive` prompts.   |
+| `cs finish --interactive`          | Open `$EDITOR` with a task-record template; close out the session with required Intent / Work / Files / Verification / Disposition. Refuses to record an incomplete payload — same gate as miagent's `miagent-task finish`. |
+| `cs finish --intent ... --work ... --files ... --verification ... --disposition ...` | Same gate, flag-driven; suitable for an agent or script. |
+
+##### CLI commands from outside a session
+
+| Command           | What it does                                                                       |
+|-------------------|------------------------------------------------------------------------------------|
+| `cs sessions`     | One row per session in the active workspace: status, last activity, agent, role/awaiting, verification, intent. `--tsv` for shell pipelines. Aliased as `cs board`. |
+| `cs doctor`       | Lint workspace journals: malformed JSON, missing header, unknown event types, closure (no finish yet), staleness (no finish + idle > 14d). Exit 1 on any error-severity finding. |
+| `cs workspace ls` | List registered workspaces.                                                       |
+| `cs workspace add <path>` | Register a git repo as a workspace (idempotent).                          |
 
 ### Configuration
 

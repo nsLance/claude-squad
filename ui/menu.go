@@ -84,6 +84,7 @@ var keyMenuGroup = map[keys.KeyName]menuGroup{
 	keys.KeyResume:             menuGroupAction,
 	keys.KeyRestart:            menuGroupAction,
 	keys.KeyCheckout:           menuGroupAction,
+	keys.KeyFinish:             menuGroupAction,
 	keys.KeyShiftUp:            menuGroupAction,
 	keys.KeyShiftDown:          menuGroupAction,
 	keys.KeyAddWorkspace:       menuGroupWorkspace,
@@ -180,6 +181,7 @@ func (m *Menu) addInstanceOptions() {
 			actionGroup = append(actionGroup, keys.KeyRestart)
 		}
 		actionGroup = append(actionGroup, keys.KeyCheckout)
+		actionGroup = append(actionGroup, keys.KeyFinish)
 	}
 
 	// Navigation group (when in diff tab)
