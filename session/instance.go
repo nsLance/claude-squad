@@ -675,6 +675,122 @@ func (i *Instance) Resume() error {
 	return nil
 }
 
+// recycleQuitTimeout bounds how long Recycle waits for a gracefully-quit agent
+// to exit (giving it time to flush memory / commit) before hard-killing it.
+const recycleQuitTimeout = 20 * time.Second
+
+// Recycle relaunches the agent so it continues its prior conversation, reusing
+// the EXISTING git worktree (branch and on-disk work untouched). It is the
+// "rebuild this session" action:
+//
+//   - Running/Ready: the live agent is asked to quit gracefully (quitKeys are
+//     sent to its pane and we wait for it to exit, so it can flush memory or
+//     commit), then it is relaunched with resumeProgram.
+//   - Exited: the agent already quit; it is relaunched with resumeProgram.
+//   - Paused: the worktree is rebuilt (as in Resume), then the agent is
+//     launched with resumeProgram.
+//
+// resumeProgram is the continue command (e.g. "claude --continue"); empty falls
+// back to the original program. quitKeys defaults to a double Ctrl-C.
+func (i *Instance) Recycle(resumeProgram string, quitKeys []string) error {
+	if !i.started {
+		return fmt.Errorf("cannot recycle an instance that has not been started")
+	}
+	if i.Status == Loading {
+		return fmt.Errorf("cannot recycle while the session is loading")
+	}
+	if resumeProgram == "" {
+		resumeProgram = i.Program
+	}
+
+	if i.Status == Paused {
+		return i.recycleFromPaused(resumeProgram)
+	}
+
+	if i.gitWorktree == nil {
+		return fmt.Errorf("cannot recycle: instance has no worktree")
+	}
+	worktreePath := i.gitWorktree.GetWorktreePath()
+	if _, err := os.Stat(worktreePath); err != nil {
+		return fmt.Errorf("worktree is gone (%s) — press resume to rebuild it", worktreePath)
+	}
+
+	// Ask a still-running agent to shut down on its own so it can run its exit
+	// path; only hard-kill if it doesn't exit in time.
+	if i.tmuxSession != nil && i.tmuxSession.DoesSessionExist() {
+		if err := i.tmuxSession.GracefulQuit(quitKeys, recycleQuitTimeout); err != nil {
+			log.WarningLog.Printf("graceful quit of %q timed out, killing: %v", i.Title, err)
+			if cerr := i.tmuxSession.Close(); cerr != nil {
+				log.ErrorLog.Print(cerr)
+			}
+		}
+	}
+
+	env, err := i.resolveEnv()
+	if err != nil {
+		log.ErrorLog.Print(err)
+		return fmt.Errorf("failed to resolve env: %w", err)
+	}
+	env = i.injectCSEnv(env)
+
+	// Build a fresh tmux session bound to the resume command (the old one held
+	// the original program and, after a graceful quit, a now-stale PTY).
+	i.tmuxSession = tmux.NewTmuxSession(i.Title, resumeProgram, i.WorkspaceID)
+	if err := i.tmuxSession.Start(worktreePath, env); err != nil {
+		log.ErrorLog.Print(err)
+		return fmt.Errorf("failed to relaunch agent: %w", err)
+	}
+
+	i.SetStatus(Running)
+	return nil
+}
+
+// recycleFromPaused rebuilds a paused session's worktree and launches the agent
+// with resumeProgram. Mirrors Resume, but always starts a fresh tmux session on
+// the resume command rather than restoring the original one.
+func (i *Instance) recycleFromPaused(resumeProgram string) error {
+	if checked, err := i.gitWorktree.IsBranchCheckedOut(); err != nil {
+		log.ErrorLog.Print(err)
+		return fmt.Errorf("failed to check if branch is checked out: %w", err)
+	} else if checked {
+		return fmt.Errorf("cannot recycle: branch is checked out, please switch to a different branch")
+	}
+
+	if err := i.gitWorktree.Setup(); err != nil {
+		log.ErrorLog.Print(err)
+		return fmt.Errorf("failed to setup git worktree: %w", err)
+	}
+
+	env, err := i.resolveEnv()
+	if err != nil {
+		log.ErrorLog.Print(err)
+		return fmt.Errorf("failed to resolve env: %w", err)
+	}
+	env = i.injectCSEnv(env)
+
+	// Pause only detaches its tmux session — the original agent is still running
+	// in it (now in a deleted dir). Kill it so the resume launch can reuse the
+	// session name.
+	if i.tmuxSession.DoesSessionExist() {
+		if err := i.tmuxSession.Close(); err != nil {
+			log.WarningLog.Printf("closing stale paused session %q: %v", i.Title, err)
+		}
+	}
+
+	i.tmuxSession = tmux.NewTmuxSession(i.Title, resumeProgram, i.WorkspaceID)
+	if err := i.tmuxSession.Start(i.gitWorktree.GetWorktreePath(), env); err != nil {
+		log.ErrorLog.Print(err)
+		if cleanupErr := i.gitWorktree.Cleanup(); cleanupErr != nil {
+			err = fmt.Errorf("%v (cleanup error: %v)", err, cleanupErr)
+		}
+		return fmt.Errorf("failed to start resume session: %w", err)
+	}
+
+	i.SetStatus(Running)
+	i.startJournal()
+	return nil
+}
+
 // UpdateDiffStats updates the git diff statistics for this instance
 func (i *Instance) UpdateDiffStats() error {
 	if !i.started {

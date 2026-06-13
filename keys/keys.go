@@ -49,6 +49,11 @@ const (
 	// Reorder keybindings
 	KeyMoveUp
 	KeyMoveDown
+
+	// KeyRecycle "rebuilds" the selected session: it relaunches the agent with
+	// its continue command in the same worktree, first asking a running agent to
+	// quit gracefully. Works in any non-loading state.
+	KeyRecycle
 )
 
 // GlobalKeyStringsMap is a global, immutable map string to keybinding.
@@ -78,6 +83,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"z":          KeyCollapseWorkspace,
 	"A":          KeyAddWorkspace,
 	"F":          KeyFinish,
+	"X":          KeyRecycle,
 }
 
 // GlobalkeyBindings is a global, immutable map of KeyName tot keybinding.
@@ -170,6 +176,11 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyMoveDown: key.NewBinding(
 		key.WithKeys("J"),
 		key.WithHelp("J", "move down"),
+	),
+
+	KeyRecycle: key.NewBinding(
+		key.WithKeys("X"),
+		key.WithHelp("X", "rebuild (continue)"),
 	),
 
 	// -- Special keybindings --

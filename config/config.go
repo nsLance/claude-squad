@@ -49,6 +49,17 @@ type Profile struct {
 	Program string `json:"program"`
 }
 
+// AgentCommand customizes how the recycle ("rebuild") action treats one agent.
+// Resume is the command used to relaunch the agent so it continues its prior
+// conversation (e.g. "claude --continue"). QuitKeys is the tmux send-keys
+// sequence sent to a still-running agent to ask it to shut down gracefully —
+// letting it flush memory, commit, etc. — before it is relaunched; each entry
+// is one tmux key token (e.g. "C-c", "Enter", or a literal like "/exit").
+type AgentCommand struct {
+	Resume   string   `json:"resume"`
+	QuitKeys []string `json:"quit_keys"`
+}
+
 // Config represents the application configuration
 type Config struct {
 	// DefaultProgram is the default program to run in new instances
@@ -61,6 +72,57 @@ type Config struct {
 	BranchPrefix string `json:"branch_prefix"`
 	// Profiles is a list of named program profiles.
 	Profiles []Profile `json:"profiles,omitempty"`
+	// AgentCommands maps a base program name ("claude", "codex", ...) to its
+	// recycle recipe (continue command + graceful-quit keys). Missing entries —
+	// or missing fields within an entry — fall back to DefaultAgentCommands.
+	AgentCommands map[string]AgentCommand `json:"agent_commands,omitempty"`
+}
+
+// DefaultAgentCommands returns the built-in recycle recipes, keyed by base
+// program name. Used to fill any agent (or field) the user hasn't configured.
+func DefaultAgentCommands() map[string]AgentCommand {
+	dblCtrlC := []string{"C-c", "C-c"}
+	return map[string]AgentCommand{
+		"claude": {Resume: "claude --continue", QuitKeys: dblCtrlC},
+		"codex":  {Resume: "codex resume --last", QuitKeys: dblCtrlC},
+		"aider":  {Resume: "aider --restore-chat-history", QuitKeys: dblCtrlC},
+		"gemini": {Resume: "gemini", QuitKeys: dblCtrlC},
+	}
+}
+
+// baseProgram extracts the bare program name from a full launch command:
+// "aider --model x" → "aider", "/opt/homebrew/bin/claude" → "claude".
+func baseProgram(program string) string {
+	fields := strings.Fields(program)
+	if len(fields) == 0 {
+		return ""
+	}
+	return filepath.Base(fields[0])
+}
+
+// AgentCommandFor returns the recycle recipe for the given launch command,
+// layering any user config over the built-in defaults. The Resume field falls
+// back to the original program (relaunch as-is) and QuitKeys to a double Ctrl-C
+// when neither config nor defaults know the agent.
+func (c *Config) AgentCommandFor(program string) AgentCommand {
+	base := baseProgram(program)
+	def := DefaultAgentCommands()[base]
+
+	ac := c.AgentCommands[base] // zero value if absent (nil map read is safe)
+	if ac.Resume == "" {
+		ac.Resume = def.Resume
+	}
+	if len(ac.QuitKeys) == 0 {
+		ac.QuitKeys = def.QuitKeys
+	}
+	// Final fallbacks for an agent neither config nor defaults recognize.
+	if ac.Resume == "" {
+		ac.Resume = program
+	}
+	if len(ac.QuitKeys) == 0 {
+		ac.QuitKeys = []string{"C-c", "C-c"}
+	}
+	return ac
 }
 
 // GetProgram returns the program to run. If Profiles is non-empty and

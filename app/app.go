@@ -1109,6 +1109,23 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, m.handleError(err)
 		}
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
+	case keys.KeyRecycle:
+		// Rebuild the session: relaunch the agent with its continue command in
+		// the same worktree. A running agent is asked to quit gracefully first
+		// (so it can flush memory / commit) before being relaunched.
+		selected := m.list.GetSelectedInstance()
+		if selected == nil || selected.Status == session.Loading {
+			return m, nil
+		}
+		ac := m.appConfig.AgentCommandFor(selected.Program)
+		m.showHelpScreen(helpTypeInstanceRecycle{}, func() {
+			if err := selected.Recycle(ac.Resume, ac.QuitKeys); err != nil {
+				m.handleError(err)
+				return
+			}
+			m.instanceChanged()
+		})
+		return m, tea.WindowSize()
 	case keys.KeySwitchWorkspace:
 		next := m.nextWorkspace()
 		if next == nil {

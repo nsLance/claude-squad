@@ -303,3 +303,60 @@ func TestSaveConfig(t *testing.T) {
 		assert.Equal(t, testConfig.BranchPrefix, loadedConfig.BranchPrefix)
 	})
 }
+
+func TestBaseProgram(t *testing.T) {
+	cases := map[string]string{
+		"claude":                       "claude",
+		"aider --model ollama/gemma3":  "aider",
+		"/opt/homebrew/bin/claude":     "claude",
+		"/usr/bin/codex resume --last": "codex",
+		"":                             "",
+		"   ":                          "",
+	}
+	for in, want := range cases {
+		assert.Equal(t, want, baseProgram(in), "baseProgram(%q)", in)
+	}
+}
+
+func TestAgentCommandFor(t *testing.T) {
+	t.Run("built-in defaults when unconfigured", func(t *testing.T) {
+		c := &Config{}
+		ac := c.AgentCommandFor("claude")
+		assert.Equal(t, "claude --continue", ac.Resume)
+		assert.Equal(t, []string{"C-c", "C-c"}, ac.QuitKeys)
+
+		codex := c.AgentCommandFor("codex")
+		assert.Equal(t, "codex resume --last", codex.Resume)
+	})
+
+	t.Run("default resolves through absolute path and extra args", func(t *testing.T) {
+		c := &Config{}
+		ac := c.AgentCommandFor("/opt/homebrew/bin/aider --model x")
+		assert.Equal(t, "aider --restore-chat-history", ac.Resume)
+	})
+
+	t.Run("unknown agent falls back to relaunching as-is", func(t *testing.T) {
+		c := &Config{}
+		ac := c.AgentCommandFor("mycli --flag")
+		assert.Equal(t, "mycli --flag", ac.Resume)
+		assert.Equal(t, []string{"C-c", "C-c"}, ac.QuitKeys)
+	})
+
+	t.Run("user config overrides defaults", func(t *testing.T) {
+		c := &Config{AgentCommands: map[string]AgentCommand{
+			"claude": {Resume: "claude --resume", QuitKeys: []string{"/exit", "Enter"}},
+		}}
+		ac := c.AgentCommandFor("claude")
+		assert.Equal(t, "claude --resume", ac.Resume)
+		assert.Equal(t, []string{"/exit", "Enter"}, ac.QuitKeys)
+	})
+
+	t.Run("partial override fills missing field from defaults", func(t *testing.T) {
+		c := &Config{AgentCommands: map[string]AgentCommand{
+			"claude": {Resume: "claude --resume"}, // QuitKeys omitted
+		}}
+		ac := c.AgentCommandFor("claude")
+		assert.Equal(t, "claude --resume", ac.Resume)
+		assert.Equal(t, []string{"C-c", "C-c"}, ac.QuitKeys, "missing QuitKeys should fall back to default")
+	})
+}
