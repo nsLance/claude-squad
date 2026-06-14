@@ -92,9 +92,6 @@ type home struct {
 	// startingInstance holds a reference to the instance being started in the background.
 	startingInstance *session.Instance
 
-	// workspaceID is the active workspace; new instances inherit it.
-	workspaceID string
-
 	// -- UI Components --
 
 	// list displays the list of instances
@@ -144,17 +141,27 @@ type home struct {
 	pendingConfirmCmd tea.Cmd
 }
 
+// scopeWorkspaceID is the workspace currently in context: the one the sessions
+// view is scoped to (and thus where a new session would be created). "" means no
+// workspace context — the unscoped "all sessions" view or the workspaces list —
+// in which case sessions can't be created. This is the single source of truth;
+// there is no separate "active workspace" state.
+func (m *home) scopeWorkspaceID() string {
+	return m.list.GetViewFilter()
+}
+
 // sessionPath returns the git-repo path a new session should be rooted at.
 // When an active workspace is set we use its registered RepoPath (so cs-edge
 // can be launched anywhere — cwd doesn't have to be the repo). When no
 // workspace is active, we fall back to "." (the current behavior); the caller
 // should refuse to create a session in that case via requireWorkspace.
 func (m *home) sessionPath() string {
-	if m.workspaceID == "" {
+	id := m.scopeWorkspaceID()
+	if id == "" {
 		return "."
 	}
 	reg := config.LoadWorkspaceRegistry()
-	if ws := reg.Get(m.workspaceID); ws != nil && ws.RepoPath != "" {
+	if ws := reg.Get(id); ws != nil && ws.RepoPath != "" {
 		return ws.RepoPath
 	}
 	return "."
@@ -165,7 +172,7 @@ func (m *home) sessionPath() string {
 // nil once a workspace is in context. New sessions are created from inside a
 // workspace — enter one first.
 func (m *home) requireWorkspace() tea.Cmd {
-	if m.workspaceID != "" {
+	if m.scopeWorkspaceID() != "" {
 		return nil
 	}
 	return m.handleError(fmt.Errorf("enter a workspace first (↵ on the workspaces list), then press n to create a session there"))
@@ -232,42 +239,41 @@ func (m *home) addWorkspaceFromPath(rawPath string) error {
 		return fmt.Errorf("register workspace: %w", err)
 	}
 
-	m.workspaceID = ws.ID
-	m.list.SetActiveWorkspace(ws.DisplayName)
-	m.list.SetActiveWorkspaceID(ws.ID)
+	// Scope into the freshly-added workspace so the user can immediately enter
+	// it and create sessions there.
+	m.applyWorkspaceFocus(ws.ID)
 	return nil
 }
 
 // resolveWorkspaceProgram returns the program command and profile name a new
-// session in the active workspace should use. If the active workspace defines
-// any profiles, the first one is treated as the workspace default; otherwise
-// the caller's launch-time program (m.program) is used and the profile name
-// is empty.
+// session in the in-context workspace should use. If that workspace defines any
+// profiles, the first one is treated as its default; otherwise the caller's
+// launch-time program (m.program) is used and the profile name is empty.
 func (m *home) resolveWorkspaceProgram() (program, profileName string) {
 	program = m.program
-	if m.workspaceID == "" {
+	id := m.scopeWorkspaceID()
+	if id == "" {
 		return
 	}
 	reg := config.LoadWorkspaceRegistry()
-	ws := reg.Get(m.workspaceID)
+	ws := reg.Get(id)
 	if ws == nil || len(ws.Profiles) == 0 {
 		return
 	}
 	return ws.Profiles[0].Program, ws.Profiles[0].Name
 }
 
-// applyWorkspaceFocus updates both the view filter and the active workspace
-// (i.e. the "new sessions land here" target) in one shot. Used by V so cycling
-// the view and switching the new-session target stay aligned.
+// applyWorkspaceFocus scopes the sessions view to a workspace (the one new
+// sessions are created in). id "" clears the scope (the unscoped "all sessions"
+// view). This is the only place the workspace context is set.
 func (m *home) applyWorkspaceFocus(id string) {
 	m.list.SetViewFilter(id)
-	m.workspaceID = id
 	reg := config.LoadWorkspaceRegistry()
 	if ws := reg.Get(id); ws != nil {
 		m.list.SetActiveWorkspace(ws.DisplayName)
 		m.list.SetActiveWorkspaceID(ws.ID)
 	} else {
-		m.list.SetActiveWorkspace("(unknown workspace)")
+		m.list.SetActiveWorkspace("")
 		m.list.SetActiveWorkspaceID(id)
 	}
 }
@@ -315,19 +321,8 @@ func newHome(ctx context.Context, program string, autoYes bool, workspaceID stri
 		autoYes:      autoYes,
 		state:        stateDefault,
 		appState:     appState,
-		workspaceID:  workspaceID,
 	}
 	h.list = ui.NewList(&h.spinner, autoYes)
-
-	// Seed the list with the active workspace's display name so the title bar
-	// shows it from launch (and `W` to switch is discoverable in the menu).
-	if workspaceID != "" {
-		reg := config.LoadWorkspaceRegistry()
-		if ws := reg.Get(workspaceID); ws != nil {
-			h.list.SetActiveWorkspace(ws.DisplayName)
-			h.list.SetActiveWorkspaceID(ws.ID)
-		}
-	}
 
 	// Load saved instances
 	instances, err := storage.LoadInstances()
@@ -348,7 +343,6 @@ func newHome(ctx context.Context, program string, autoYes bool, workspaceID stri
 	// Build the navigation views (persistent; the stack holds pointers to them).
 	h.workspacesView = ui.NewWorkspacesView()
 	h.sessionsView = ui.NewSessionsView(h.list)
-	h.sessionsView.SetScopeLabel(h.labelForFilter(workspaceID))
 	h.sessionDetailView = ui.NewSessionDetailView(h.tabbedWindow, func() string {
 		if sel := h.list.GetSelectedInstance(); sel != nil {
 			return sel.Title
@@ -357,12 +351,18 @@ func newHome(ctx context.Context, program string, autoYes bool, workspaceID stri
 	})
 
 	// Root view: a workspaces "namespace" list when more than one workspace is
-	// registered, otherwise drop straight into that workspace's sessions
-	// (preserves the single-workspace landing experience).
+	// registered, otherwise drop straight into the single workspace's sessions
+	// (scoped to it, so n can create there immediately).
 	reg := config.LoadWorkspaceRegistry()
 	if len(reg.Workspaces) > 1 {
 		h.viewStack = []ui.View{h.workspacesView}
 	} else {
+		scopeID := workspaceID
+		if scopeID == "" && len(reg.Workspaces) == 1 {
+			scopeID = reg.Workspaces[0].ID
+		}
+		h.applyWorkspaceFocus(scopeID)
+		h.sessionsView.SetScopeLabel(h.labelForFilter(scopeID))
 		h.viewStack = []ui.View{h.sessionsView}
 	}
 
@@ -428,7 +428,6 @@ func (m *home) refreshWorkspacesView() {
 			Repo:     w.RepoPath,
 			Sessions: counts[w.ID],
 			LastUsed: w.LastUsedAt,
-			Active:   w.ID == m.workspaceID,
 		})
 	}
 	m.workspacesView.SetRows(rows)
@@ -1041,7 +1040,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			Title:       "",
 			Path:        repoPath,
 			Program:     program,
-			WorkspaceID: m.workspaceID,
+			WorkspaceID: m.scopeWorkspaceID(),
 			ProfileName: profileName,
 		})
 		if err != nil {
@@ -1611,7 +1610,7 @@ func (m *home) startNewSession() (tea.Model, tea.Cmd) {
 		Title:       "",
 		Path:        m.sessionPath(),
 		Program:     program,
-		WorkspaceID: m.workspaceID,
+		WorkspaceID: m.scopeWorkspaceID(),
 		ProfileName: profileName,
 	})
 	if err != nil {
@@ -1863,11 +1862,9 @@ func (m *home) confirmDeleteWorkspace() (tea.Model, tea.Cmd) {
 		if err := config.LoadWorkspaceRegistry().Remove(id); err != nil {
 			return err
 		}
-		// If we just deleted the active workspace, drop the focus.
-		if m.workspaceID == id {
-			m.workspaceID = ""
-			m.list.SetActiveWorkspace("")
-			m.list.SetActiveWorkspaceID("")
+		// If the sessions view was scoped to the deleted workspace, drop the scope.
+		if m.scopeWorkspaceID() == id {
+			m.applyWorkspaceFocus("")
 		}
 		return instanceChangedMsg{}
 	}
@@ -1937,13 +1934,20 @@ func (m *home) commandOrMenu() string {
 	return m.menu.String()
 }
 
-// updateHeader refreshes the top banner's context data before each render.
+// updateHeader refreshes the top banner's context data before each render. The
+// "ns:" label shows the workspace in context (the sessions view's scope); on the
+// workspaces list there is no single workspace context, so it's blank.
 func (m *home) updateHeader() {
-	m.menu.SetWorkspacesMode(m.currentView().Kind() == ui.ViewWorkspaces)
+	onWorkspaces := m.currentView().Kind() == ui.ViewWorkspaces
+	m.menu.SetWorkspacesMode(onWorkspaces)
+	ns := ""
+	if !onWorkspaces {
+		ns = m.labelForFilter(m.scopeWorkspaceID())
+	}
 	reg := config.LoadWorkspaceRegistry()
 	m.header.Update(
 		config.Version,
-		m.labelForFilter(m.workspaceID),
+		ns,
 		m.list.NumInstances(),
 		len(reg.Workspaces),
 		m.breadcrumb(),

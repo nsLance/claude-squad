@@ -16,12 +16,7 @@ type WorkspaceRow struct {
 	Repo     string
 	Sessions int
 	LastUsed time.Time
-	Active   bool
 }
-
-var activeWorkspaceStyle = lipgloss.NewStyle().
-	Bold(true).
-	Foreground(lipgloss.Color("62"))
 
 // WorkspaceColumns is the column set for the workspaces ("namespaces") table.
 func WorkspaceColumns() []Column {
@@ -29,14 +24,8 @@ func WorkspaceColumns() []Column {
 	return []Column{
 		{
 			Title: "NAME", MinWidth: 14, Weight: 2, Align: lipgloss.Left,
-			Render: func(r any) string {
-				w := row(r)
-				if w.Active {
-					return activeWorkspaceStyle.Render("● " + w.Name)
-				}
-				return "  " + w.Name
-			},
-			Less: func(a, b any) bool { return row(a).Name < row(b).Name },
+			Render: func(r any) string { return row(r).Name },
+			Less:   func(a, b any) bool { return row(a).Name < row(b).Name },
 		},
 		{
 			Title: "REPO", MinWidth: 16, Weight: 3, Align: lipgloss.Left,

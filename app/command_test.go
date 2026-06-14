@@ -77,7 +77,6 @@ func TestExecuteCommand_WsMissingArg(t *testing.T) {
 
 func TestExecuteCommand_SessionsClearsScope(t *testing.T) {
 	h := newCommandTestHome(t)
-	h.workspaceID = "some-id"
 	h.list.SetViewFilter("some-id")
 
 	h.executeCommand("sessions")
