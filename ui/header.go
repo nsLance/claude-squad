@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/truncate"
 )
 
 // Header geometry. The header is a k9s/a9s-style band: a bordered shortcut box
@@ -12,6 +13,14 @@ import (
 // stylized ASCII wordmark on the right, with a breadcrumb row beneath.
 const (
 	shortcutGridRows = 4
+	// shortcutBoxTextWidth pins the usable text columns inside the box so its
+	// right edge doesn't shift as the view (and thus the shortcut set) changes.
+	// Sized to hold the widest common grid (the 3-column sessions view); longer
+	// lines are truncated rather than wrapped so the box height stays fixed.
+	shortcutBoxTextWidth = 62
+	// lipgloss Style.Width() includes horizontal padding, so the box's Width is
+	// the text area plus the 1-col padding on each side.
+	shortcutBoxWidth = shortcutBoxTextWidth + 2
 	// headerBoxHeight = rounded border (2) + context line (1) + grid rows (4).
 	headerBoxHeight = 2 + 1 + shortcutGridRows
 	// headerHeight adds the breadcrumb row beneath the box.
@@ -37,7 +46,8 @@ var logoTagStyle = lipgloss.NewStyle().
 var headerBoxStyle = lipgloss.NewStyle().
 	Border(lipgloss.RoundedBorder()).
 	BorderForeground(lipgloss.Color("62")).
-	Padding(0, 1)
+	Padding(0, 1).
+	Width(shortcutBoxWidth)
 
 var headerLogoStyle = lipgloss.NewStyle().
 	Bold(true).
@@ -153,10 +163,15 @@ func (h *Header) compactBand() string {
 		runewidthClamp(line, h.width))
 }
 
-// shortcutBox is the bordered context line + shortcut grid.
+// shortcutBox is the bordered context line + shortcut grid, pinned to a fixed
+// width so its edge doesn't move between views.
 func (h *Header) shortcutBox() string {
-	grid := strings.Join(renderShortcutGrid(h.allShortcuts(), shortcutGridRows), "\n")
-	inner := lipgloss.JoinVertical(lipgloss.Left, h.contextLine(), grid)
+	lines := append([]string{h.contextLine()}, renderShortcutGrid(h.allShortcuts(), shortcutGridRows)...)
+	for i, l := range lines {
+		// Truncate (ANSI-aware) so a too-long line can't wrap and grow the box.
+		lines[i] = truncate.String(l, uint(shortcutBoxTextWidth))
+	}
+	inner := lipgloss.JoinVertical(lipgloss.Left, lines...)
 	return headerBoxStyle.Render(inner)
 }
 
