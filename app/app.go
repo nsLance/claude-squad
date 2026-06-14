@@ -51,6 +51,8 @@ const (
 	stateConfirm
 	// stateAddWorkspace is the state while the "add workspace" overlay is open.
 	stateAddWorkspace
+	// stateCommand is the state while the ":" command bar is capturing input.
+	stateCommand
 )
 
 type home struct {
@@ -99,6 +101,8 @@ type home struct {
 	header *ui.Header
 	// menu displays the bottom menu
 	menu *ui.Menu
+	// cmdBar is the ":" command-bar input line (shown only in stateCommand)
+	cmdBar *ui.CommandBar
 	// tabbedWindow displays the tabbed window with preview and diff panes
 	tabbedWindow *ui.TabbedWindow
 	// errBox displays error messages
@@ -354,6 +358,7 @@ func newHome(ctx context.Context, program string, autoYes bool, workspaceID stri
 		spinner:      spinner.New(spinner.WithSpinner(spinner.MiniDot)),
 		header:       ui.NewHeader(),
 		menu:         ui.NewMenu(),
+		cmdBar:       ui.NewCommandBar(),
 		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
 		errBox:       ui.NewErrBox(),
 		storage:      storage,
@@ -429,6 +434,7 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 		log.ErrorLog.Print(err)
 	}
 	m.menu.SetSize(msg.Width, menuHeight)
+	m.cmdBar.SetSize(msg.Width, menuHeight)
 }
 
 func (m *home) Init() tea.Cmd {
@@ -645,7 +651,7 @@ func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly 
 		m.keySent = false
 		return nil, false
 	}
-	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm || m.state == stateAddWorkspace {
+	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm || m.state == stateAddWorkspace || m.state == stateCommand {
 		return nil, false
 	}
 	// If it's in the global keymap, we should try to highlight it.
@@ -680,6 +686,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 	if m.state == stateHelp {
 		return m.handleHelpState(msg)
+	}
+
+	if m.state == stateCommand {
+		return m.handleCommandState(msg)
 	}
 
 	if m.state == stateNew {
@@ -914,6 +924,14 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 	}
 
+	// Enter the ":" command bar (k9s-style). Only reachable in stateDefault —
+	// the modal states returned above.
+	if msg.String() == ":" {
+		m.state = stateCommand
+		m.cmdBar.Reset()
+		return m, nil
+	}
+
 	// Handle quit commands first
 	if msg.String() == "ctrl+c" || msg.String() == "q" {
 		return m.handleQuit()
@@ -964,31 +982,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 		return m, fetchCmd
 	case keys.KeyNew:
-		if m.list.NumInstances() >= GlobalInstanceLimit {
-			return m, m.handleError(
-				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
-		}
-		if cmd := m.requireWorkspace(); cmd != nil {
-			return m, cmd
-		}
-		program, profileName := m.resolveWorkspaceProgram()
-		instance, err := session.NewInstance(session.InstanceOptions{
-			Title:       "",
-			Path:        m.sessionPath(),
-			Program:     program,
-			WorkspaceID: m.workspaceID,
-			ProfileName: profileName,
-		})
-		if err != nil {
-			return m, m.handleError(err)
-		}
-
-		m.newInstanceFinalizer = m.list.AddInstance(instance)
-		m.list.SetSelectedInstance(m.list.NumInstances() - 1)
-		m.state = stateNew
-		m.menu.SetState(ui.StateNewInstance)
-
-		return m, nil
+		return m.startNewSession()
 	case keys.KeyUp:
 		m.list.Up()
 		return m, m.instanceChanged()
@@ -1547,6 +1541,130 @@ func (m *home) replaySessionCreate(r pendingCreate) tea.Cmd {
 	return tea.Batch(tea.WindowSize(), m.instanceChanged(), startCmd)
 }
 
+// startNewSession creates a fresh (unnamed) instance and enters name-entry
+// mode. Shared by the `n` key and the `:new` command.
+func (m *home) startNewSession() (tea.Model, tea.Cmd) {
+	if m.list.NumInstances() >= GlobalInstanceLimit {
+		return m, m.handleError(
+			fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
+	}
+	if cmd := m.requireWorkspace(); cmd != nil {
+		return m, cmd
+	}
+	program, profileName := m.resolveWorkspaceProgram()
+	instance, err := session.NewInstance(session.InstanceOptions{
+		Title:       "",
+		Path:        m.sessionPath(),
+		Program:     program,
+		WorkspaceID: m.workspaceID,
+		ProfileName: profileName,
+	})
+	if err != nil {
+		return m, m.handleError(err)
+	}
+
+	m.newInstanceFinalizer = m.list.AddInstance(instance)
+	m.list.SetSelectedInstance(m.list.NumInstances() - 1)
+	m.state = stateNew
+	m.menu.SetState(ui.StateNewInstance)
+	return m, nil
+}
+
+// handleCommandState routes keypresses while the ":" command bar is open. It
+// mirrors the rune-capture pattern used by stateNew: runes/space accumulate,
+// backspace trims, Enter dispatches, Esc/ctrl+c cancel.
+func (m *home) handleCommandState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEnter:
+		input := strings.TrimSpace(m.cmdBar.Value())
+		if input == "" {
+			m.state = stateDefault
+			m.cmdBar.Reset()
+			return m, nil
+		}
+		return m.executeCommand(input)
+	case tea.KeyEsc:
+		m.state = stateDefault
+		m.cmdBar.Reset()
+		return m, nil
+	case tea.KeyRunes:
+		m.cmdBar.Insert(string(msg.Runes))
+		return m, nil
+	case tea.KeySpace:
+		m.cmdBar.Insert(" ")
+		return m, nil
+	case tea.KeyBackspace:
+		m.cmdBar.Backspace()
+		return m, nil
+	}
+	if msg.String() == "ctrl+c" {
+		m.state = stateDefault
+		m.cmdBar.Reset()
+		return m, nil
+	}
+	return m, nil
+}
+
+// executeCommand dispatches a parsed command-bar verb. On success it returns to
+// stateDefault and clears the bar; on a bad command it sets an error on the bar
+// and stays in stateCommand so the user can edit and retry.
+func (m *home) executeCommand(input string) (tea.Model, tea.Cmd) {
+	verb, args, _ := ui.ParseCommand(input)
+
+	fail := func(msg string) (tea.Model, tea.Cmd) {
+		m.cmdBar.SetError(msg) // stays in stateCommand
+		return m, nil
+	}
+	done := func(model tea.Model, cmd tea.Cmd) (tea.Model, tea.Cmd) {
+		m.state = stateDefault
+		m.cmdBar.Reset()
+		return model, cmd
+	}
+
+	switch verb {
+	// Until the nav stack lands (Phase D), both clear the workspace scope so
+	// every session is visible.
+	case "sessions", "workspaces":
+		m.applyWorkspaceFocus("")
+		return done(m, tea.WindowSize())
+	case "ws":
+		if len(args) == 0 {
+			return fail("usage: ws <name>")
+		}
+		name := strings.Join(args, " ")
+		reg := config.LoadWorkspaceRegistry()
+		ws := reg.FindByName(name)
+		if ws == nil {
+			return fail(fmt.Sprintf("no workspace: %s", name))
+		}
+		m.applyWorkspaceFocus(ws.ID)
+		return done(m, tea.WindowSize())
+	case "new":
+		// startNewSession sets stateNew on success (or returns an error with
+		// state reset to default below).
+		m.state = stateDefault
+		m.cmdBar.Reset()
+		return m.startNewSession()
+	case "quit":
+		return m.handleQuit()
+	case "help":
+		m.state = stateDefault
+		m.cmdBar.Reset()
+		return m.showHelpScreen(helpTypeGeneral{}, nil)
+	default:
+		return fail(fmt.Sprintf("unknown command: %s", verb))
+	}
+}
+
+// commandOrMenu renders the command bar in place of the menu while in
+// stateCommand, so the bottom region keeps a stable height.
+func (m *home) commandOrMenu() string {
+	if m.state == stateCommand {
+		return m.cmdBar.String()
+	}
+	return m.menu.String()
+}
+
 // updateHeader refreshes the top banner's context data before each render.
 // Breadcrumb is static ("sessions") until the nav stack lands (Phase D).
 func (m *home) updateHeader() {
@@ -1569,7 +1687,7 @@ func (m *home) View() string {
 		lipgloss.Left,
 		m.header.String(),
 		listAndPreview,
-		m.menu.String(),
+		m.commandOrMenu(),
 		m.errBox.String(),
 	)
 
