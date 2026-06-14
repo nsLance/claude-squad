@@ -95,6 +95,8 @@ type home struct {
 
 	// list displays the list of instances
 	list *ui.List
+	// header displays the top banner (context block + hotkeys) and breadcrumb
+	header *ui.Header
 	// menu displays the bottom menu
 	menu *ui.Menu
 	// tabbedWindow displays the tabbed window with preview and diff panes
@@ -350,6 +352,7 @@ func newHome(ctx context.Context, program string, autoYes bool, workspaceID stri
 	h := &home{
 		ctx:          ctx,
 		spinner:      spinner.New(spinner.WithSpinner(spinner.MiniDot)),
+		header:       ui.NewHeader(),
 		menu:         ui.NewMenu(),
 		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
 		errBox:       ui.NewErrBox(),
@@ -399,10 +402,17 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	listWidth := int(float32(msg.Width) * 0.3)
 	tabsWidth := msg.Width - listWidth
 
-	// Menu takes 10% of height, list and window take 90%
-	contentHeight := int(float32(msg.Height) * 0.9)
-	menuHeight := msg.Height - contentHeight - 1     // minus 1 for error box
+	// Menu takes 10% of height; the header + list + window share the other 90%.
+	regionHeight := int(float32(msg.Height) * 0.9)
+	menuHeight := msg.Height - regionHeight - 1      // minus 1 for error box
 	m.errBox.SetSize(int(float32(msg.Width)*0.9), 1) // error box takes 1 row
+
+	// Carve the header out of the top of the content region.
+	m.header.SetSize(msg.Width)
+	contentHeight := regionHeight - m.header.Height()
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
 
 	m.tabbedWindow.SetSize(tabsWidth, contentHeight)
 	m.list.SetSize(listWidth, contentHeight)
@@ -1537,13 +1547,27 @@ func (m *home) replaySessionCreate(r pendingCreate) tea.Cmd {
 	return tea.Batch(tea.WindowSize(), m.instanceChanged(), startCmd)
 }
 
+// updateHeader refreshes the top banner's context data before each render.
+// Breadcrumb is static ("sessions") until the nav stack lands (Phase D).
+func (m *home) updateHeader() {
+	reg := config.LoadWorkspaceRegistry()
+	m.header.Update(
+		config.Version,
+		m.labelForFilter(m.workspaceID),
+		m.list.NumInstances(),
+		len(reg.Workspaces),
+		"sessions",
+	)
+}
+
 func (m *home) View() string {
-	listWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.list.String())
-	previewWithPadding := lipgloss.NewStyle().PaddingTop(1).Render(m.tabbedWindow.String())
-	listAndPreview := lipgloss.JoinHorizontal(lipgloss.Top, listWithPadding, previewWithPadding)
+	m.updateHeader()
+
+	listAndPreview := lipgloss.JoinHorizontal(lipgloss.Top, m.list.String(), m.tabbedWindow.String())
 
 	mainView := lipgloss.JoinVertical(
-		lipgloss.Center,
+		lipgloss.Left,
+		m.header.String(),
 		listAndPreview,
 		m.menu.String(),
 		m.errBox.String(),
