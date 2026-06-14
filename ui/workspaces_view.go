@@ -111,5 +111,7 @@ func (v *WorkspacesView) SetSize(width, height int) {
 
 func (v *WorkspacesView) String() string {
 	v.table.SetSize(v.width, v.height)
-	return v.table.String()
+	// Pad to the full content height (see SessionsView.String) so the layout
+	// fills the screen and overlays center correctly.
+	return lipgloss.Place(v.width, v.height, lipgloss.Left, lipgloss.Top, v.table.String())
 }
