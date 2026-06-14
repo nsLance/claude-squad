@@ -2,8 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"os"
-	"strings"
 	"time"
 
 	"claude-squad/config"
@@ -12,13 +10,6 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 )
-
-// csTableUI reports whether the k9s-style columnar table renderer is enabled.
-// Phase A ships it behind CS_TABLE_UI so the classic list stays the default
-// until the full table-primary layout lands.
-func csTableUI() bool {
-	return os.Getenv("CS_TABLE_UI") != ""
-}
 
 var runningStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#2b8acb", Dark: "#4ab3ff"})
@@ -193,15 +184,4 @@ func (l *List) RenderTableBody(width, height int) string {
 	}
 	t.SetSize(width, height)
 	return t.String()
-}
-
-// RenderTable renders the session list as a k9s-style columnar table under the
-// existing list header. Used when csTableUI() is enabled (Phase A); Phase D
-// promotes RenderTableBody to the primary renderer via SessionsView.
-func (l *List) RenderTable() string {
-	header := l.renderHeader()
-	headerLines := strings.Split(header, "\n")
-	body := l.RenderTableBody(l.width, l.height-len(headerLines))
-	final := append(headerLines, strings.Split(body, "\n")...)
-	return lipgloss.Place(l.width, l.height, lipgloss.Left, lipgloss.Top, strings.Join(final, "\n"))
 }

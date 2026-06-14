@@ -89,8 +89,6 @@ var keyMenuGroup = map[keys.KeyName]menuGroup{
 	keys.KeyShiftDown:          menuGroupAction,
 	keys.KeyAddWorkspace:       menuGroupWorkspace,
 	keys.KeySwitchWorkspace:    menuGroupWorkspace,
-	keys.KeyViewFilter:         menuGroupWorkspace,
-	keys.KeyCollapseWorkspace:  menuGroupWorkspace,
 	keys.KeyTab:                menuGroupSystem,
 	keys.KeyHelp:               menuGroupSystem,
 	keys.KeyQuit:               menuGroupSystem,

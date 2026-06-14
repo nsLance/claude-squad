@@ -266,42 +266,6 @@ func (m *home) resolveWorkspaceProgram() (program, profileName string) {
 	return ws.Profiles[0].Program, ws.Profiles[0].Name
 }
 
-// cycleViewFilter advances the view filter through "All → ws1 → ws2 → ... → All"
-// in the exact same order the tab bar renders (registry order, then any orphan
-// workspace ids that exist only as instance metadata). Each non-All stop ALSO
-// sets the active workspace, so new sessions land in whatever you're looking at.
-// On "All", the active workspace is left untouched.
-func (m *home) cycleViewFilter() string {
-	candidates := m.tabOrderIDs()
-	if len(candidates) == 0 {
-		m.list.SetViewFilter("")
-		return "All"
-	}
-	current := m.list.GetViewFilter()
-	switch {
-	case current == "":
-		m.applyWorkspaceFocus(candidates[0])
-		return m.labelForFilter(candidates[0])
-	default:
-		for i, id := range candidates {
-			if id == current {
-				if i+1 < len(candidates) {
-					m.applyWorkspaceFocus(candidates[i+1])
-					return m.labelForFilter(candidates[i+1])
-				}
-				// Cycled past the last workspace — back to All.
-				m.list.SetViewFilter("")
-				return "All"
-			}
-		}
-		// Current filter has disappeared (e.g. user removed the workspace
-		// while filtered to it). Reset to All so the next press picks
-		// something valid.
-		m.list.SetViewFilter("")
-		return "All"
-	}
-}
-
 // applyWorkspaceFocus updates both the view filter and the active workspace
 // (i.e. the "new sessions land here" target) in one shot. Used by V so cycling
 // the view and switching the new-session target stay aligned.
@@ -316,28 +280,6 @@ func (m *home) applyWorkspaceFocus(id string) {
 		m.list.SetActiveWorkspace("(unknown workspace)")
 		m.list.SetActiveWorkspaceID(id)
 	}
-}
-
-// tabOrderIDs returns workspace ids in the same order the tab bar renders
-// them: registry order first, then orphan ids (instances whose workspace was
-// removed from the registry). Shared with the List so the cycle highlight
-// always advances in the visual direction of the tabs.
-func (m *home) tabOrderIDs() []string {
-	reg := config.LoadWorkspaceRegistry()
-	seen := map[string]struct{}{}
-	var ids []string
-	for _, w := range reg.Workspaces {
-		seen[w.ID] = struct{}{}
-		ids = append(ids, w.ID)
-	}
-	for _, inst := range m.list.GetInstances() {
-		if _, ok := seen[inst.WorkspaceID]; ok {
-			continue
-		}
-		seen[inst.WorkspaceID] = struct{}{}
-		ids = append(ids, inst.WorkspaceID)
-	}
-	return ids
 }
 
 // labelForFilter resolves a workspace id to its display name. Returns "(unknown
@@ -1243,12 +1185,6 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		m.workspaceID = next.ID
 		m.list.SetActiveWorkspace(next.DisplayName)
 		m.list.SetActiveWorkspaceID(next.ID)
-		return m, nil
-	case keys.KeyViewFilter:
-		m.cycleViewFilter()
-		return m, nil
-	case keys.KeyCollapseWorkspace:
-		m.list.ToggleCollapseCurrent()
 		return m, nil
 	case keys.KeyFinish:
 		selected := m.list.GetSelectedInstance()

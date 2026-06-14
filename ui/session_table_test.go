@@ -17,7 +17,7 @@ func TestRenderTable_HeaderAndScoping(t *testing.T) {
 	l.SetSize(120, 20)
 
 	// Unscoped: column header present, all three sessions shown, WORKSPACE column visible.
-	out := l.RenderTable()
+	out := l.RenderTableBody(120, 20)
 	require.Contains(t, out, "NAME")
 	require.Contains(t, out, "STATUS")
 	require.Contains(t, out, "WORKSPACE")
@@ -27,7 +27,7 @@ func TestRenderTable_HeaderAndScoping(t *testing.T) {
 
 	// Scoped to ws-a: docs-pass (ws-b) is filtered out; WORKSPACE column dropped.
 	l.SetViewFilter("ws-a")
-	scoped := l.RenderTable()
+	scoped := l.RenderTableBody(120, 20)
 	require.Contains(t, scoped, "auth-refactor")
 	require.NotContains(t, scoped, "docs-pass")
 	require.NotContains(t, scoped, "WORKSPACE")
@@ -55,7 +55,7 @@ func TestRenderTable_EmptyState(t *testing.T) {
 	l := NewList(nil, false)
 	l.SetActiveWorkspace("backend")
 	l.SetSize(120, 20)
-	out := l.RenderTable()
+	out := l.RenderTableBody(120, 20)
 	require.Contains(t, out, "No sessions")
 }
 
