@@ -103,6 +103,21 @@ type home struct {
 	menu *ui.Menu
 	// cmdBar is the ":" command-bar input line (shown only in stateCommand)
 	cmdBar *ui.CommandBar
+
+	// -- Navigation stack (k9s-style drill-down) --
+
+	// viewStack is never empty; the bottom is the root table view. The top is
+	// the currently-rendered screen.
+	viewStack []ui.View
+	// The three concrete views are persistent (never reallocated) so navigation
+	// doesn't resize the backing List/TabbedWindow. sessionsView/sessionDetailView
+	// wrap m.list/m.tabbedWindow; workspacesView owns its own table.
+	workspacesView    *ui.WorkspacesView
+	sessionsView      *ui.SessionsView
+	sessionDetailView *ui.SessionDetailView
+	// lastWindowSize caches the most recent terminal size so relayout() can
+	// re-run the size math after a push/pop changes the active view.
+	lastWindowSize tea.WindowSizeMsg
 	// tabbedWindow displays the tabbed window with preview and diff panes
 	tabbedWindow *ui.TabbedWindow
 	// errBox displays error messages
@@ -397,17 +412,96 @@ func newHome(ctx context.Context, program string, autoYes bool, workspaceID stri
 		}
 	}
 
+	// Build the navigation views (persistent; the stack holds pointers to them).
+	h.workspacesView = ui.NewWorkspacesView()
+	h.sessionsView = ui.NewSessionsView(h.list)
+	h.sessionsView.SetScopeLabel(h.labelForFilter(workspaceID))
+	h.sessionDetailView = ui.NewSessionDetailView(h.tabbedWindow, func() string {
+		if sel := h.list.GetSelectedInstance(); sel != nil {
+			return sel.Title
+		}
+		return ""
+	})
+
+	// Root view: a workspaces "namespace" list when more than one workspace is
+	// registered, otherwise drop straight into that workspace's sessions
+	// (preserves the single-workspace landing experience).
+	reg := config.LoadWorkspaceRegistry()
+	if len(reg.Workspaces) > 1 {
+		h.viewStack = []ui.View{h.workspacesView}
+	} else {
+		h.viewStack = []ui.View{h.sessionsView}
+	}
+
 	return h
+}
+
+// sessionActionKeys are keybindings that operate on the selected session and so
+// only make sense on the sessions / detail views, not the workspaces list.
+var sessionActionKeys = map[keys.KeyName]struct{}{
+	keys.KeyNew: {}, keys.KeyPrompt: {}, keys.KeyKill: {}, keys.KeySubmit: {},
+	keys.KeyCheckout: {}, keys.KeyResume: {}, keys.KeyRestart: {},
+	keys.KeyFinish: {}, keys.KeyMoveUp: {}, keys.KeyMoveDown: {}, keys.KeyTab: {},
+	keys.KeyShiftUp: {}, keys.KeyShiftDown: {},
+}
+
+func isSessionActionKey(name keys.KeyName) bool {
+	_, ok := sessionActionKeys[name]
+	return ok
+}
+
+// currentView returns the screen on top of the nav stack.
+func (m *home) currentView() ui.View { return m.viewStack[len(m.viewStack)-1] }
+
+// pushView adds a screen and re-lays-out for the new view.
+func (m *home) pushView(v ui.View) {
+	m.viewStack = append(m.viewStack, v)
+}
+
+// popView removes the top screen (no-op at the root).
+func (m *home) popView() {
+	if len(m.viewStack) > 1 {
+		m.viewStack = m.viewStack[:len(m.viewStack)-1]
+	}
+}
+
+// breadcrumb joins the stack's segments, e.g. "workspaces › sessions(backend)".
+func (m *home) breadcrumb() string {
+	parts := make([]string, len(m.viewStack))
+	for i, v := range m.viewStack {
+		parts[i] = v.Breadcrumb()
+	}
+	return strings.Join(parts, "/")
+}
+
+// refreshWorkspacesView rebuilds the workspaces table rows from the registry and
+// live session counts.
+func (m *home) refreshWorkspacesView() {
+	reg := config.LoadWorkspaceRegistry()
+	counts := map[string]int{}
+	for _, inst := range m.list.GetInstances() {
+		counts[inst.WorkspaceID]++
+	}
+	rows := make([]ui.WorkspaceRow, 0, len(reg.Workspaces))
+	for _, w := range reg.Workspaces {
+		rows = append(rows, ui.WorkspaceRow{
+			ID:       w.ID,
+			Name:     w.DisplayName,
+			Repo:     w.RepoPath,
+			Sessions: counts[w.ID],
+			LastUsed: w.LastUsedAt,
+			Active:   w.ID == m.workspaceID,
+		})
+	}
+	m.workspacesView.SetRows(rows)
 }
 
 // updateHandleWindowSizeEvent sets the sizes of the components.
 // The components will try to render inside their bounds.
 func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
-	// List takes 30% of width, preview takes 70%
-	listWidth := int(float32(msg.Width) * 0.3)
-	tabsWidth := msg.Width - listWidth
+	m.lastWindowSize = msg
 
-	// Menu takes 10% of height; the header + list + window share the other 90%.
+	// Menu takes 10% of height; the header + content region share the other 90%.
 	regionHeight := int(float32(msg.Height) * 0.9)
 	menuHeight := msg.Height - regionHeight - 1      // minus 1 for error box
 	m.errBox.SetSize(int(float32(msg.Width)*0.9), 1) // error box takes 1 row
@@ -419,8 +513,14 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 		contentHeight = 1
 	}
 
-	m.tabbedWindow.SetSize(tabsWidth, contentHeight)
-	m.list.SetSize(listWidth, contentHeight)
+	// Table-primary, drill-down: every view is full-width. The TabbedWindow is
+	// sized to the full content region at ALL times — even when a table view is
+	// showing — so its tmux preview dimensions never thrash as the user drills
+	// in and out (see plan Risk #1).
+	m.tabbedWindow.SetSize(msg.Width, contentHeight)
+	m.list.SetSize(msg.Width, contentHeight)
+	m.workspacesView.SetSize(msg.Width, contentHeight)
+	m.sessionsView.SetSize(msg.Width, contentHeight)
 
 	if m.textInputOverlay != nil {
 		m.textInputOverlay.SetSize(int(float32(msg.Width)*0.6), int(float32(msg.Height)*0.4))
@@ -922,6 +1022,12 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			m.tabbedWindow.ResetTerminalToNormalMode()
 			return m, m.instanceChanged()
 		}
+		// Otherwise, Esc pops the navigation stack (drill back out). At the root
+		// view it is a no-op (it must not quit).
+		if len(m.viewStack) > 1 {
+			m.popView()
+			return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
+		}
 	}
 
 	// Enter the ":" command bar (k9s-style). Only reachable in stateDefault —
@@ -939,6 +1045,14 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 	name, ok := keys.GlobalKeyStringsMap[msg.String()]
 	if !ok {
+		return m, nil
+	}
+
+	// On the workspaces ("namespace") view, session-scoped actions don't apply —
+	// the user must drill into a workspace first. Up/Down/Enter are handled in
+	// their own cases below (they route by view kind). Workspace/help/quit keys
+	// stay live.
+	if m.currentView().Kind() == ui.ViewWorkspaces && isSessionActionKey(name) {
 		return m, nil
 	}
 
@@ -984,9 +1098,17 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	case keys.KeyNew:
 		return m.startNewSession()
 	case keys.KeyUp:
+		if m.currentView().Kind() == ui.ViewWorkspaces {
+			m.workspacesView.MoveUp()
+			return m, nil
+		}
 		m.list.Up()
 		return m, m.instanceChanged()
 	case keys.KeyDown:
+		if m.currentView().Kind() == ui.ViewWorkspaces {
+			m.workspacesView.MoveDown()
+			return m, nil
+		}
 		m.list.Down()
 		return m, m.instanceChanged()
 	case keys.KeyShiftUp:
@@ -1145,6 +1267,29 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		// width 0 → renders one char per line.
 		return m, tea.WindowSize()
 	case keys.KeyEnter:
+		// Drill-down: Enter on the workspaces view opens that workspace's
+		// sessions; Enter on the sessions view opens the selected session's
+		// detail; Enter inside the detail view attaches (handled below).
+		switch m.currentView().Kind() {
+		case ui.ViewWorkspaces:
+			id := m.workspacesView.SelectedWorkspaceID()
+			if id == "" {
+				return m, nil
+			}
+			m.applyWorkspaceFocus(id)
+			m.sessionsView.SetScopeLabel(m.labelForFilter(id))
+			m.pushView(m.sessionsView)
+			return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
+		case ui.ViewSessions:
+			if m.list.GetSelectedInstance() == nil {
+				return m, nil
+			}
+			m.sessionDetailView.SetScopeLabel(m.labelForFilter(m.list.GetSelectedInstance().WorkspaceID))
+			m.pushView(m.sessionDetailView)
+			return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
+		}
+
+		// ViewSessionDetail: attach to the selected session.
 		if m.list.NumInstances() == 0 {
 			return m, nil
 		}
@@ -1622,11 +1767,16 @@ func (m *home) executeCommand(input string) (tea.Model, tea.Cmd) {
 	}
 
 	switch verb {
-	// Until the nav stack lands (Phase D), both clear the workspace scope so
-	// every session is visible.
-	case "sessions", "workspaces":
-		m.applyWorkspaceFocus("")
+	case "workspaces":
+		// Jump to the workspaces ("namespace") list as the root.
+		m.viewStack = []ui.View{m.workspacesView}
 		return done(m, tea.WindowSize())
+	case "sessions":
+		// Unscoped sessions list as the root.
+		m.applyWorkspaceFocus("")
+		m.sessionsView.SetScopeLabel("All")
+		m.viewStack = []ui.View{m.sessionsView}
+		return done(m, tea.Batch(tea.WindowSize(), m.instanceChanged()))
 	case "ws":
 		if len(args) == 0 {
 			return fail("usage: ws <name>")
@@ -1638,7 +1788,10 @@ func (m *home) executeCommand(input string) (tea.Model, tea.Cmd) {
 			return fail(fmt.Sprintf("no workspace: %s", name))
 		}
 		m.applyWorkspaceFocus(ws.ID)
-		return done(m, tea.WindowSize())
+		m.sessionsView.SetScopeLabel(ws.DisplayName)
+		// Stack workspaces → sessions(scoped) so Esc returns to the ws list.
+		m.viewStack = []ui.View{m.workspacesView, m.sessionsView}
+		return done(m, tea.Batch(tea.WindowSize(), m.instanceChanged()))
 	case "new":
 		// startNewSession sets stateNew on success (or returns an error with
 		// state reset to default below).
@@ -1666,7 +1819,6 @@ func (m *home) commandOrMenu() string {
 }
 
 // updateHeader refreshes the top banner's context data before each render.
-// Breadcrumb is static ("sessions") until the nav stack lands (Phase D).
 func (m *home) updateHeader() {
 	reg := config.LoadWorkspaceRegistry()
 	m.header.Update(
@@ -1674,19 +1826,21 @@ func (m *home) updateHeader() {
 		m.labelForFilter(m.workspaceID),
 		m.list.NumInstances(),
 		len(reg.Workspaces),
-		"sessions",
+		m.breadcrumb(),
 	)
 }
 
 func (m *home) View() string {
 	m.updateHeader()
-
-	listAndPreview := lipgloss.JoinHorizontal(lipgloss.Top, m.list.String(), m.tabbedWindow.String())
+	// Refresh the workspaces table data when it's the active screen.
+	if m.currentView().Kind() == ui.ViewWorkspaces {
+		m.refreshWorkspacesView()
+	}
 
 	mainView := lipgloss.JoinVertical(
 		lipgloss.Left,
 		m.header.String(),
-		listAndPreview,
+		m.currentView().String(),
 		m.commandOrMenu(),
 		m.errBox.String(),
 	)

@@ -176,19 +176,13 @@ func (l *List) visibleRows() (rows []any, selIdx int) {
 	return rows, selIdx
 }
 
-// RenderTable renders the session list as a k9s-style columnar table under the
-// existing list header. Used when csTableUI() is enabled (Phase A); Phase D
-// promotes it to the primary renderer via SessionsView.
-func (l *List) RenderTable() string {
-	header := l.renderHeader()
-	headerLines := strings.Split(header, "\n")
-
+// RenderTableBody renders just the sessions table (header row + rows) at the
+// given size, honoring the current view filter and selection. No list header —
+// the top banner provides context. Used by SessionsView (Phase D).
+func (l *List) RenderTableBody(width, height int) string {
 	if len(l.items) == 0 {
-		body := l.renderEmptyState()
-		return lipgloss.Place(l.width, l.height, lipgloss.Left, lipgloss.Top,
-			strings.Join(append(headerLines, strings.Split(body, "\n")...), "\n"))
+		return l.renderEmptyState()
 	}
-
 	rows, selIdx := l.visibleRows()
 	reg := config.LoadWorkspaceRegistry()
 	showWorkspace := l.viewFilter == ""
@@ -197,9 +191,17 @@ func (l *List) RenderTable() string {
 	if selIdx >= 0 {
 		t.SetSelected(selIdx)
 	}
-	t.SetSize(l.width, l.height-len(headerLines))
+	t.SetSize(width, height)
+	return t.String()
+}
 
-	bodyLines := strings.Split(t.String(), "\n")
-	final := append(headerLines, bodyLines...)
+// RenderTable renders the session list as a k9s-style columnar table under the
+// existing list header. Used when csTableUI() is enabled (Phase A); Phase D
+// promotes RenderTableBody to the primary renderer via SessionsView.
+func (l *List) RenderTable() string {
+	header := l.renderHeader()
+	headerLines := strings.Split(header, "\n")
+	body := l.RenderTableBody(l.width, l.height-len(headerLines))
+	final := append(headerLines, strings.Split(body, "\n")...)
 	return lipgloss.Place(l.width, l.height, lipgloss.Left, lipgloss.Top, strings.Join(final, "\n"))
 }

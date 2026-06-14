@@ -19,14 +19,19 @@ func newCommandTestHome(t *testing.T) *home {
 	t.Setenv(config.ConfigHomeEnvVar, t.TempDir())
 
 	h := &home{
-		ctx:       context.Background(),
-		state:     stateCommand,
-		appConfig: config.DefaultConfig(),
-		spinner:   spinner.New(),
-		cmdBar:    ui.NewCommandBar(),
-		menu:      ui.NewMenu(),
+		ctx:          context.Background(),
+		state:        stateCommand,
+		appConfig:    config.DefaultConfig(),
+		spinner:      spinner.New(),
+		cmdBar:       ui.NewCommandBar(),
+		menu:         ui.NewMenu(),
+		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
 	}
 	h.list = ui.NewList(&h.spinner, false)
+	h.workspacesView = ui.NewWorkspacesView()
+	h.sessionsView = ui.NewSessionsView(h.list)
+	h.sessionDetailView = ui.NewSessionDetailView(h.tabbedWindow, func() string { return "" })
+	h.viewStack = []ui.View{h.sessionsView}
 	return h
 }
 
