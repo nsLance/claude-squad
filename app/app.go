@@ -53,6 +53,8 @@ const (
 	stateAddWorkspace
 	// stateCommand is the state while the ":" command bar is capturing input.
 	stateCommand
+	// stateFilter is the state while the "/" filter bar is capturing input.
+	stateFilter
 )
 
 type home struct {
@@ -103,6 +105,11 @@ type home struct {
 	menu *ui.Menu
 	// cmdBar is the ":" command-bar input line (shown only in stateCommand)
 	cmdBar *ui.CommandBar
+	// filterBar is the "/" filter input line (shown only in stateFilter)
+	filterBar *ui.CommandBar
+	// filterText is the active "/" filter, applied to the current view's table.
+	// Non-empty even after the input is committed (Enter); cleared by Esc.
+	filterText string
 
 	// -- Navigation stack (k9s-style drill-down) --
 
@@ -316,6 +323,7 @@ func newHome(ctx context.Context, program string, autoYes bool, workspaceID stri
 		header:       ui.NewHeader(),
 		menu:         ui.NewMenu(),
 		cmdBar:       ui.NewCommandBar(),
+		filterBar:    ui.NewBarWithPrompt("/"),
 		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
 		errBox:       ui.NewErrBox(),
 		storage:      storage,
@@ -395,14 +403,17 @@ func isSessionActionKey(name keys.KeyName) bool {
 // currentView returns the screen on top of the nav stack.
 func (m *home) currentView() ui.View { return m.viewStack[len(m.viewStack)-1] }
 
-// pushView adds a screen and re-lays-out for the new view.
+// pushView adds a screen and re-lays-out for the new view. Any active "/" filter
+// is cleared so it doesn't silently carry into the new screen.
 func (m *home) pushView(v ui.View) {
+	m.clearFilter()
 	m.viewStack = append(m.viewStack, v)
 }
 
-// popView removes the top screen (no-op at the root).
+// popView removes the top screen (no-op at the root), clearing any active filter.
 func (m *home) popView() {
 	if len(m.viewStack) > 1 {
+		m.clearFilter()
 		m.viewStack = m.viewStack[:len(m.viewStack)-1]
 	}
 }
@@ -477,6 +488,7 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	}
 	m.menu.SetSize(msg.Width, menuHeight)
 	m.cmdBar.SetSize(msg.Width, menuHeight)
+	m.filterBar.SetSize(msg.Width, menuHeight)
 }
 
 func (m *home) Init() tea.Cmd {
@@ -693,7 +705,7 @@ func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly 
 		m.keySent = false
 		return nil, false
 	}
-	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm || m.state == stateAddWorkspace || m.state == stateCommand {
+	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm || m.state == stateAddWorkspace || m.state == stateCommand || m.state == stateFilter {
 		return nil, false
 	}
 	// If it's in the global keymap, we should try to highlight it.
@@ -732,6 +744,10 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 	if m.state == stateCommand {
 		return m.handleCommandState(msg)
+	}
+
+	if m.state == stateFilter {
+		return m.handleFilterState(msg)
 	}
 
 	if m.state == stateNew {
@@ -964,6 +980,12 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			m.tabbedWindow.ResetTerminalToNormalMode()
 			return m, m.instanceChanged()
 		}
+		// A committed "/" filter is cleared first (before popping the stack), so
+		// Esc peels off the filter, then drills back out.
+		if m.filterText != "" {
+			m.clearFilter()
+			return m, m.instanceChanged()
+		}
 		// Otherwise, Esc pops the navigation stack (drill back out). At the root
 		// view it is a no-op (it must not quit).
 		if len(m.viewStack) > 1 {
@@ -977,6 +999,17 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	if msg.String() == ":" {
 		m.state = stateCommand
 		m.cmdBar.Reset()
+		return m, nil
+	}
+
+	// Enter the "/" filter bar; the current filter (if any) is pre-loaded for
+	// editing. Not available on the detail view (nothing to filter there).
+	if msg.String() == "/" && m.currentView().Kind() != ui.ViewSessionDetail {
+		m.state = stateFilter
+		m.filterBar.Reset()
+		if m.filterText != "" {
+			m.filterBar.Insert(m.filterText)
+		}
 		return m, nil
 	}
 
@@ -1699,6 +1732,7 @@ func (m *home) executeCommand(input string) (tea.Model, tea.Cmd) {
 	done := func(model tea.Model, cmd tea.Cmd) (tea.Model, tea.Cmd) {
 		m.state = stateDefault
 		m.cmdBar.Reset()
+		m.clearFilter() // a command-driven view switch starts unfiltered
 		return model, cmd
 	}
 
@@ -1745,11 +1779,65 @@ func (m *home) executeCommand(input string) (tea.Model, tea.Cmd) {
 	}
 }
 
-// commandOrMenu renders the command bar in place of the menu while in
-// stateCommand, so the bottom region keeps a stable height.
+// handleFilterState routes keypresses while the "/" filter bar is open. The
+// filter applies live as the user types; Enter commits it (exits input but keeps
+// filtering); Esc/ctrl+c clears it.
+func (m *home) handleFilterState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEnter:
+		// Commit: keep the filter, return to navigation.
+		m.state = stateDefault
+		return m, m.instanceChanged()
+	case tea.KeyEsc:
+		m.clearFilter()
+		m.state = stateDefault
+		return m, m.instanceChanged()
+	case tea.KeyRunes:
+		m.filterBar.Insert(string(msg.Runes))
+	case tea.KeySpace:
+		m.filterBar.Insert(" ")
+	case tea.KeyBackspace:
+		m.filterBar.Backspace()
+	default:
+		if msg.String() == "ctrl+c" {
+			m.clearFilter()
+			m.state = stateDefault
+			return m, m.instanceChanged()
+		}
+		return m, nil
+	}
+	// Apply live after any edit.
+	m.filterText = m.filterBar.Value()
+	m.applyFilter()
+	return m, m.instanceChanged()
+}
+
+// applyFilter pushes the current filterText into whichever table is active.
+func (m *home) applyFilter() {
+	switch m.currentView().Kind() {
+	case ui.ViewWorkspaces:
+		m.workspacesView.SetFilter(m.filterText)
+	case ui.ViewSessions:
+		m.list.SetTextFilter(m.filterText)
+	}
+}
+
+// clearFilter removes the active filter from both tables.
+func (m *home) clearFilter() {
+	m.filterText = ""
+	m.filterBar.Reset()
+	m.list.SetTextFilter("")
+	m.workspacesView.SetFilter("")
+}
+
+// commandOrMenu renders the command/filter bar in place of the menu while
+// capturing input, so the bottom region keeps a stable height.
 func (m *home) commandOrMenu() string {
-	if m.state == stateCommand {
+	switch m.state {
+	case stateCommand:
 		return m.cmdBar.String()
+	case stateFilter:
+		return m.filterBar.String()
 	}
 	return m.menu.String()
 }
@@ -1763,6 +1851,7 @@ func (m *home) updateHeader() {
 		m.list.NumInstances(),
 		len(reg.Workspaces),
 		m.breadcrumb(),
+		m.filterText,
 	)
 }
 

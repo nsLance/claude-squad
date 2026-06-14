@@ -156,7 +156,7 @@ func (l *List) visibleRows() (rows []any, selIdx int) {
 	sel := l.GetSelectedInstance()
 	selIdx = -1
 	for _, it := range l.items {
-		if l.viewFilter != "" && it.WorkspaceID != l.viewFilter {
+		if !l.isItemVisible(it) {
 			continue
 		}
 		if it == sel {

@@ -109,6 +109,9 @@ func (v *WorkspacesView) MoveUp()    { v.table.MoveUp() }
 func (v *WorkspacesView) MoveDown()  { v.table.MoveDown() }
 func (v *WorkspacesView) CycleSort() { v.table.CycleSort() }
 
+// SetFilter applies a live substring filter to the workspaces table.
+func (v *WorkspacesView) SetFilter(f string) { v.table.SetFilter(f) }
+
 func (v *WorkspacesView) Kind() ViewKind     { return ViewWorkspaces }
 func (v *WorkspacesView) Breadcrumb() string { return "workspaces" }
 

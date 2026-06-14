@@ -6,6 +6,7 @@ import (
 	"claude-squad/session"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/lipgloss"
@@ -44,6 +45,10 @@ type List struct {
 	// viewFilter is the workspace id to filter the visible list to. Empty = show all.
 	viewFilter string
 
+	// textFilter is a live "/"-filter substring matched against each session's
+	// title and branch. Empty = no text filter.
+	textFilter string
+
 	// collapsedWorkspaces tracks which workspace groups are folded in the list.
 	collapsedWorkspaces map[string]bool
 
@@ -77,6 +82,18 @@ func (l *List) GetViewFilter() string {
 	return l.viewFilter
 }
 
+// SetTextFilter applies a live substring filter (matched against title/branch)
+// and snaps the selection to a still-visible item.
+func (l *List) SetTextFilter(s string) {
+	l.textFilter = s
+	l.ensureSelectionVisible()
+}
+
+// GetTextFilter returns the active "/"-filter substring, or "".
+func (l *List) GetTextFilter() string {
+	return l.textFilter
+}
+
 // VisibleInstanceCount returns the number of instances matching the current view filter
 // (ignoring collapse — collapsed items are "hidden" visually but still counted).
 func (l *List) VisibleInstanceCount() int {
@@ -101,8 +118,9 @@ func (l *List) WorkspaceCount() int {
 	return len(seen)
 }
 
-// isItemVisible reports whether the given instance is currently rendered
-// (i.e. passes the view filter and is not inside a collapsed group).
+// isItemVisible reports whether the given instance is currently rendered (i.e.
+// passes the workspace view filter, the "/" text filter, and is not inside a
+// collapsed group).
 func (l *List) isItemVisible(inst *session.Instance) bool {
 	if l.viewFilter != "" && inst.WorkspaceID != l.viewFilter {
 		return false
@@ -110,7 +128,18 @@ func (l *List) isItemVisible(inst *session.Instance) bool {
 	if l.collapsedWorkspaces[inst.WorkspaceID] {
 		return false
 	}
+	if l.textFilter != "" && !sessionMatchesFilter(inst, l.textFilter) {
+		return false
+	}
 	return true
+}
+
+// sessionMatchesFilter reports whether an instance matches the "/" filter
+// (case-insensitive substring against its title and branch).
+func sessionMatchesFilter(inst *session.Instance, filter string) bool {
+	needle := strings.ToLower(filter)
+	return strings.Contains(strings.ToLower(inst.Title), needle) ||
+		strings.Contains(strings.ToLower(inst.Branch), needle)
 }
 
 // ensureSelectionVisible nudges the selection forward (then backward) to the

@@ -36,14 +36,21 @@ var breadcrumbStyle = lipgloss.NewStyle().
 var breadcrumbSepStyle = lipgloss.NewStyle().
 	Foreground(lipgloss.AdaptiveColor{Light: "#7A7474", Dark: "#9C9494"})
 
+// filterIndicatorStyle highlights the active "/" filter on the breadcrumb row.
+var filterIndicatorStyle = lipgloss.NewStyle().
+	Bold(true).
+	Foreground(lipgloss.Color("#1a1a1a")).
+	Background(lipgloss.Color("#FFCC00"))
+
 // hint is a single key/description pair shown on the right of the banner.
 type hint struct{ key, desc string }
 
 var defaultHints = []hint{
 	{":", "cmd"},
-	{"?", "help"},
+	{"/", "filter"},
 	{"↵", "open"},
 	{"esc", "back"},
+	{"?", "help"},
 	{"q", "quit"},
 }
 
@@ -58,6 +65,7 @@ type Header struct {
 	sessionCount   int
 	workspaceCount int
 	breadcrumb     string
+	filter         string
 }
 
 func NewHeader() *Header { return &Header{} }
@@ -67,13 +75,15 @@ func (h *Header) SetSize(w int) { h.width = w }
 // Height returns the fixed row count the header occupies.
 func (h *Header) Height() int { return headerHeight }
 
-// Update refreshes the data shown in the header.
-func (h *Header) Update(version, activeWS string, sessions, workspaces int, breadcrumb string) {
+// Update refreshes the data shown in the header. filter is the active "/"-filter
+// text (empty when none), shown as an indicator on the breadcrumb row.
+func (h *Header) Update(version, activeWS string, sessions, workspaces int, breadcrumb, filter string) {
 	h.version = version
 	h.activeWS = activeWS
 	h.sessionCount = sessions
 	h.workspaceCount = workspaces
 	h.breadcrumb = breadcrumb
+	h.filter = filter
 }
 
 func (h *Header) String() string {
@@ -114,16 +124,24 @@ func (h *Header) renderHints() string {
 }
 
 func (h *Header) breadcrumbRow() string {
-	if h.breadcrumb == "" {
-		return ""
+	var crumb string
+	if h.breadcrumb != "" {
+		segs := strings.Split(h.breadcrumb, "/")
+		rendered := make([]string, len(segs))
+		for i, s := range segs {
+			rendered[i] = breadcrumbStyle.Render(strings.TrimSpace(s))
+		}
+		crumb = strings.Join(rendered, breadcrumbSepStyle.Render(" › "))
 	}
-	segs := strings.Split(h.breadcrumb, "/")
-	rendered := make([]string, len(segs))
-	for i, s := range segs {
-		rendered[i] = breadcrumbStyle.Render(strings.TrimSpace(s))
+	if h.filter != "" {
+		indicator := filterIndicatorStyle.Render("/" + h.filter)
+		if crumb != "" {
+			crumb += "   " + indicator
+		} else {
+			crumb = indicator
+		}
 	}
-	sep := breadcrumbSepStyle.Render(" › ")
-	return runewidthClamp(strings.Join(rendered, sep), h.width)
+	return runewidthClamp(crumb, h.width)
 }
 
 // runewidthClamp truncates a (possibly styled) string to width display columns.

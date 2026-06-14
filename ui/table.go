@@ -1,12 +1,18 @@
 package ui
 
 import (
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 )
+
+// ansiRe strips SGR escape sequences so filter matching sees plain cell text.
+var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
 // markerWidth is the fixed left gutter the table reserves for the selection
 // marker ("▸ " or two spaces). Using a gutter marker instead of a full-row
@@ -46,7 +52,9 @@ type Column struct {
 // own a Table directly.
 type Table struct {
 	columns     []Column
-	rows        []any
+	allRows     []any // full set as supplied
+	rows        []any // filtered + sorted, what renders
+	filter      string
 	selectedIdx int
 	width       int
 	height      int
@@ -58,16 +66,60 @@ func NewTable(cols []Column) *Table {
 	return &Table{columns: cols, sortKey: -1, sortAsc: true}
 }
 
-// SetRows replaces the rows and re-applies the current sort.
+// SetRows replaces the full row set and re-applies the current filter + sort.
 func (t *Table) SetRows(rows []any) {
-	t.rows = rows
-	t.applySort()
+	t.allRows = rows
+	t.rebuild()
+}
+
+// SetFilter sets a case-insensitive substring filter applied across all cells.
+// Empty clears it.
+func (t *Table) SetFilter(f string) {
+	t.filter = f
+	t.rebuild()
+}
+
+// rebuild recomputes the visible rows from allRows by filtering then sorting,
+// preserving the selected row by identity and clamping the index.
+func (t *Table) rebuild() {
+	sel := t.SelectedRow()
+	t.rows = t.rows[:0]
+	for _, r := range t.allRows {
+		if t.rowMatches(r) {
+			t.rows = append(t.rows, r)
+		}
+	}
+	t.sortRows()
+	t.selectedIdx = 0
+	if sel != nil {
+		for i, r := range t.rows {
+			if r == sel {
+				t.selectedIdx = i
+				break
+			}
+		}
+	}
 	if t.selectedIdx >= len(t.rows) {
 		t.selectedIdx = len(t.rows) - 1
 	}
 	if t.selectedIdx < 0 {
 		t.selectedIdx = 0
 	}
+}
+
+// rowMatches reports whether a row passes the current filter (any cell, ANSI
+// stripped, case-insensitive substring).
+func (t *Table) rowMatches(row any) bool {
+	if t.filter == "" {
+		return true
+	}
+	needle := strings.ToLower(t.filter)
+	for _, c := range t.columns {
+		if strings.Contains(strings.ToLower(stripANSI(c.Render(row))), needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *Table) SetSize(w, h int) { t.width, t.height = w, h }
@@ -114,16 +166,16 @@ func (t *Table) CycleSort() {
 		} else {
 			t.sortKey, t.sortAsc = idx, true
 		}
-		t.applySort()
+		t.rebuild()
 		return
 	}
 }
 
-func (t *Table) applySort() {
+// sortRows stable-sorts t.rows in place by the active sort column.
+func (t *Table) sortRows() {
 	if t.sortKey < 0 || t.sortKey >= len(t.columns) || t.columns[t.sortKey].Less == nil {
 		return
 	}
-	sel := t.SelectedRow()
 	less := t.columns[t.sortKey].Less
 	sort.SliceStable(t.rows, func(a, b int) bool {
 		if t.sortAsc {
@@ -131,14 +183,6 @@ func (t *Table) applySort() {
 		}
 		return less(t.rows[b], t.rows[a])
 	})
-	if sel != nil {
-		for i, r := range t.rows {
-			if r == sel {
-				t.selectedIdx = i
-				break
-			}
-		}
-	}
 }
 
 // computeWidths greedily includes columns left-to-right until the pane is full

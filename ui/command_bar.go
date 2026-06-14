@@ -18,12 +18,16 @@ var cmdBarCursorStyle = lipgloss.NewStyle().
 // an optional error message; the app owns parsing/dispatch and key routing
 // (reusing the same rune-capture pattern as the new-session name entry).
 type CommandBar struct {
+	prompt        string
 	input         string
 	err           string
 	width, height int
 }
 
-func NewCommandBar() *CommandBar { return &CommandBar{} }
+func NewCommandBar() *CommandBar { return &CommandBar{prompt: ":"} }
+
+// NewBarWithPrompt builds a bar with a custom prompt (e.g. "/" for filtering).
+func NewBarWithPrompt(prompt string) *CommandBar { return &CommandBar{prompt: prompt} }
 
 func (c *CommandBar) SetSize(w, h int) { c.width, c.height = w, h }
 
@@ -52,7 +56,11 @@ func (c *CommandBar) Backspace() {
 }
 
 func (c *CommandBar) String() string {
-	line := cmdBarPromptStyle.Render(":") +
+	prompt := c.prompt
+	if prompt == "" {
+		prompt = ":"
+	}
+	line := cmdBarPromptStyle.Render(prompt) +
 		cmdBarTextStyle.Render(c.input) +
 		cmdBarCursorStyle.Render("█")
 	if c.err != "" {

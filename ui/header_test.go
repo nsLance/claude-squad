@@ -11,7 +11,7 @@ import (
 func TestHeader_BannerContent(t *testing.T) {
 	h := NewHeader()
 	h.SetSize(120)
-	h.Update("1.0.18", "backend", 3, 2, "sessions")
+	h.Update("1.0.18", "backend", 3, 2, "sessions", "")
 
 	out := h.String()
 	require.Contains(t, out, "claude-squad v1.0.18")
@@ -30,7 +30,7 @@ func TestHeader_BannerContent(t *testing.T) {
 func TestHeader_Breadcrumb(t *testing.T) {
 	h := NewHeader()
 	h.SetSize(120)
-	h.Update("1.0.18", "backend", 1, 1, "workspaces/sessions(backend)")
+	h.Update("1.0.18", "backend", 1, 1, "workspaces/sessions(backend)", "")
 
 	lines := strings.Split(h.String(), "\n")
 	require.Len(t, lines, 2)
@@ -42,7 +42,7 @@ func TestHeader_Breadcrumb(t *testing.T) {
 func TestHeader_NarrowDropsHints(t *testing.T) {
 	h := NewHeader()
 	h.SetSize(30) // too narrow for context block + hints
-	h.Update("1.0.18", "backend", 3, 2, "sessions")
+	h.Update("1.0.18", "backend", 3, 2, "sessions", "")
 
 	lines := strings.Split(h.String(), "\n")
 	require.LessOrEqual(t, lipgloss.Width(lines[0]), 30, "banner must not overflow width")
@@ -53,6 +53,6 @@ func TestHeader_NarrowDropsHints(t *testing.T) {
 func TestHeader_EmptyWorkspacePlaceholder(t *testing.T) {
 	h := NewHeader()
 	h.SetSize(120)
-	h.Update("1.0.18", "", 0, 0, "")
+	h.Update("1.0.18", "", 0, 0, "", "")
 	require.Contains(t, h.String(), "ns:")
 }

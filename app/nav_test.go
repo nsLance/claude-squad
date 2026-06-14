@@ -21,6 +21,7 @@ func newNavTestHome(t *testing.T) *home {
 		appConfig:    config.DefaultConfig(),
 		spinner:      spinner.New(),
 		cmdBar:       ui.NewCommandBar(),
+		filterBar:    ui.NewBarWithPrompt("/"),
 		menu:         ui.NewMenu(),
 		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
 	}
