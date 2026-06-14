@@ -144,25 +144,6 @@ type home struct {
 	pendingConfirmCmd tea.Cmd
 }
 
-// nextWorkspace returns the workspace that should follow the currently-active one
-// when the user presses W. Returns nil if there's only one (or zero) workspaces
-// registered, in which case the key is a no-op.
-func (m *home) nextWorkspace() *config.Workspace {
-	reg := config.LoadWorkspaceRegistry()
-	if len(reg.Workspaces) < 2 {
-		return nil
-	}
-	idx := -1
-	for i, w := range reg.Workspaces {
-		if w.ID == m.workspaceID {
-			idx = i
-			break
-		}
-	}
-	next := reg.Workspaces[(idx+1)%len(reg.Workspaces)]
-	return &next
-}
-
 // sessionPath returns the git-repo path a new session should be rooted at.
 // When an active workspace is set we use its registered RepoPath (so cs-edge
 // can be launched anywhere — cwd doesn't have to be the repo). When no
@@ -179,13 +160,15 @@ func (m *home) sessionPath() string {
 	return "."
 }
 
-// requireWorkspace returns an error tea.Cmd suitable for refusing a new-session
-// action when no workspace is active. Returns nil if a workspace is set.
+// requireWorkspace returns an error tea.Cmd refusing a new-session action when
+// not scoped to a workspace (e.g. on the unscoped "all sessions" view). Returns
+// nil once a workspace is in context. New sessions are created from inside a
+// workspace — enter one first.
 func (m *home) requireWorkspace() tea.Cmd {
 	if m.workspaceID != "" {
 		return nil
 	}
-	return m.handleError(fmt.Errorf("no active workspace — press A to add one or W to switch into an existing one"))
+	return m.handleError(fmt.Errorf("enter a workspace first (↵ on the workspaces list), then press n to create a session there"))
 }
 
 // addWorkspaceFromPath handles a path the user typed into the Add-Workspace
@@ -1185,15 +1168,6 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, m.handleError(err)
 		}
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
-	case keys.KeySwitchWorkspace:
-		next := m.nextWorkspace()
-		if next == nil {
-			return m, nil
-		}
-		m.workspaceID = next.ID
-		m.list.SetActiveWorkspace(next.DisplayName)
-		m.list.SetActiveWorkspaceID(next.ID)
-		return m, nil
 	case keys.KeyFinish:
 		selected := m.list.GetSelectedInstance()
 		if selected == nil || selected.Status == session.Loading {
@@ -1778,18 +1752,16 @@ func (m *home) executeCommand(input string) (tea.Model, tea.Cmd) {
 // ":checkout" works as well as ":c". Word commands handled explicitly above
 // (workspaces/sessions/ws/new/delete/quit/help) are intentionally absent.
 var actionWordToKey = map[string]string{
-	"checkout":        "c",
-	"push":            "p",
-	"resume":          "r",
-	"restart":         "R",
-	"finish":          "F",
-	"attach":          "enter",
-	"open":            "enter",
-	"prompt":          "N",
-	"add":             "A",
-	"addworkspace":    "A",
-	"switch":          "W",
-	"switchworkspace": "W",
+	"checkout":     "c",
+	"push":         "p",
+	"resume":       "r",
+	"restart":      "R",
+	"finish":       "F",
+	"attach":       "enter",
+	"open":         "enter",
+	"prompt":       "N",
+	"add":          "A",
+	"addworkspace": "A",
 }
 
 // dispatchSyntheticKey re-feeds a keybinding through the normal key handler, so

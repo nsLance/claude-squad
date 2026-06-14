@@ -112,13 +112,18 @@ Press `:` to open the command bar (the primary way to jump around):
 - `:workspaces` (`:ns`) — the workspaces ("namespace") list
 - `:ws <name>` — jump into a workspace's sessions
 - `:sessions` (`:s`, `:all`) — all sessions, unscoped
-- `:new` (`:n`) — create a new session
+- `:new` (`:n`) — create (a session inside a workspace, a workspace on the list)
 - `:quit` (`:q`) — quit
 
+Every keybinding is also runnable as a command, case-sensitively: `:c` (checkout), `:p` (push), `:r` (resume), `:R` (restart), `:F` (finish), `:A` (add workspace), plus word forms like `:checkout`, `:push`.
+
+##### Create / delete (context-aware)
+`n` and `D` act on whatever the current view lists:
+- On the **workspaces** list: `n` creates a workspace, `D` deletes one (refused while it still has sessions).
+- Inside a **workspace** (after `↵`): `n` creates a session *in that workspace*, `D` deletes the selected session.
+
 ##### Session Management
-- `n` - Create a new session
 - `N` - Create a new session with a prompt
-- `D` - Kill (delete) the selected session
 - `R` - Restart a session whose agent process exited (keeps the worktree)
 - `↑/j`, `↓/k` - Move the cursor
 
@@ -132,8 +137,8 @@ Press `:` to open the command bar (the primary way to jump around):
 - `?` - Show help menu
 
 ##### Workspaces
-- `A` - Add a workspace (existing dir or new — git-init's new dirs automatically)
-- `W` - Switch active workspace (where new sessions land)
+- `↵` - Enter a workspace to see and create its sessions
+- `A` - Add a workspace from anywhere (existing dir or new — git-init's new dirs automatically)
 
 ##### Other
 - `tab` - Switch between preview, diff, and terminal tabs

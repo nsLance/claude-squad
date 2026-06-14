@@ -58,7 +58,7 @@ type Menu struct {
 
 var defaultMenuOptions = []keys.KeyName{
 	keys.KeyNew, keys.KeyPrompt,
-	keys.KeyAddWorkspace, keys.KeySwitchWorkspace,
+	keys.KeyAddWorkspace,
 	keys.KeyHelp, keys.KeyQuit,
 }
 
@@ -66,7 +66,7 @@ var defaultMenuOptions = []keys.KeyName{
 // as sessions, scoped to workspace CRUD.
 var workspacesMenuOptions = []keys.KeyName{
 	keys.KeyNew, keys.KeyKill,
-	keys.KeyEnter, keys.KeySwitchWorkspace,
+	keys.KeyEnter,
 	keys.KeyHelp, keys.KeyQuit,
 }
 var newInstanceMenuOptions = []keys.KeyName{keys.KeySubmitName}
@@ -99,7 +99,6 @@ var keyMenuGroup = map[keys.KeyName]menuGroup{
 	keys.KeyShiftUp:            menuGroupAction,
 	keys.KeyShiftDown:          menuGroupAction,
 	keys.KeyAddWorkspace:       menuGroupWorkspace,
-	keys.KeySwitchWorkspace:    menuGroupWorkspace,
 	keys.KeyTab:                menuGroupSystem,
 	keys.KeyHelp:               menuGroupSystem,
 	keys.KeyQuit:               menuGroupSystem,
@@ -214,7 +213,7 @@ func (m *Menu) addInstanceOptions() {
 
 	// Workspace group: workspace-management keys, surfaced in every state so
 	// users discover them without opening the full help screen.
-	workspaceGroup := []keys.KeyName{keys.KeyAddWorkspace, keys.KeySwitchWorkspace}
+	workspaceGroup := []keys.KeyName{keys.KeyAddWorkspace}
 
 	// System group
 	systemGroup := []keys.KeyName{keys.KeyTab, keys.KeyHelp, keys.KeyQuit}

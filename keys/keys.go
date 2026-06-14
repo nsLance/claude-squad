@@ -32,8 +32,6 @@ const (
 	KeyShiftUp
 	KeyShiftDown
 
-	// KeySwitchWorkspace cycles the active workspace (the one new sessions will be created in).
-	KeySwitchWorkspace
 	// KeyAddWorkspace opens an overlay for adding a new workspace by path.
 	KeyAddWorkspace
 	// KeyFinish suspends the TUI to run `cs finish --interactive` for the
@@ -69,7 +67,6 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"R":          KeyRestart,
 	"p":          KeySubmit,
 	"?":          KeyHelp,
-	"W":          KeySwitchWorkspace,
 	"A":          KeyAddWorkspace,
 	"F":          KeyFinish,
 }
@@ -135,10 +132,6 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyRestart: key.NewBinding(
 		key.WithKeys("R"),
 		key.WithHelp("R", "restart"),
-	),
-	KeySwitchWorkspace: key.NewBinding(
-		key.WithKeys("W"),
-		key.WithHelp("W", "switch workspace"),
 	),
 	KeyAddWorkspace: key.NewBinding(
 		key.WithKeys("A"),

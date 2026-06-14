@@ -24,7 +24,6 @@ func TestActionWordAliasesMapToKeys(t *testing.T) {
 		"resume":   "r",
 		"restart":  "R",
 		"finish":   "F",
-		"switch":   "W",
 		"add":      "A",
 	}
 	for word, keyStr := range cases {
