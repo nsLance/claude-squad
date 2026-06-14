@@ -29,6 +29,8 @@ type helpTypeInstanceAttach struct{}
 
 type helpTypeInstanceCheckout struct{}
 
+type helpTypeInstanceRecycle struct{}
+
 func helpStart(instance *session.Instance) helpText {
 	return helpTypeInstanceStart{instance: instance}
 }
@@ -47,6 +49,7 @@ func (h helpTypeGeneral) toContent() string {
 		keyStyle.Render("↵/o")+descStyle.Render("       - Attach to the selected session (restarts it if the agent exited)"),
 		keyStyle.Render("ctrl-q")+descStyle.Render("    - Detach from session"),
 		keyStyle.Render("R")+descStyle.Render("         - Restart a session whose agent exited (keeps the worktree)"),
+		keyStyle.Render("X")+descStyle.Render("         - Rebuild: relaunch the agent (continuing its conversation) in the same worktree"),
 		"",
 		headerStyle.Render("Handoff:"),
 		keyStyle.Render("p")+descStyle.Render("         - Commit and push branch to github"),
@@ -120,6 +123,20 @@ func (h helpTypeInstanceCheckout) toContent() string {
 	)
 	return content
 }
+func (h helpTypeInstanceRecycle) toContent() string {
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		titleStyle.Render("Rebuild Session"),
+		"",
+		"The agent is relaunched in the same worktree and branch, continuing its previous conversation.",
+		"",
+		"If it's still running, it is first asked to exit gracefully (e.g. Ctrl-C twice) so it can flush memory or commit before shutting down — this can take a few seconds.",
+		"",
+		headerStyle.Render("Tip:"),
+		descStyle.Render("Customize the continue command and quit keys per agent in config.json under \"agent_commands\"."),
+	)
+	return content
+}
+
 func (h helpTypeGeneral) mask() uint32 {
 	return 1
 }
@@ -132,6 +149,9 @@ func (h helpTypeInstanceAttach) mask() uint32 {
 }
 func (h helpTypeInstanceCheckout) mask() uint32 {
 	return 1 << 3
+}
+func (h helpTypeInstanceRecycle) mask() uint32 {
+	return 1 << 4
 }
 
 var (

@@ -334,6 +334,46 @@ func (t *TmuxSession) SendKeys(keys string) error {
 	return err
 }
 
+// keySendInterval spaces out the quit keys so the agent registers each one (a
+// burst can otherwise be coalesced or dropped); quitPollInterval is how often
+// GracefulQuit checks whether the agent has exited. Both are vars so tests can
+// shorten them.
+var (
+	keySendInterval  = 150 * time.Millisecond
+	quitPollInterval = 50 * time.Millisecond
+)
+
+// GracefulQuit asks the agent running in the session to shut down on its own:
+// it sends each token in quitKeys to the session's active pane via tmux
+// send-keys (e.g. "C-c" "C-c", or "/exit" "Enter"), then waits up to timeout
+// for the session to disappear — which happens once the agent process exits and
+// its pane closes. This lets the agent run its normal exit path (flush memory,
+// commit, ...) instead of being hard-killed. Returns an error if the session is
+// still alive when timeout elapses; callers typically fall back to Close().
+func (t *TmuxSession) GracefulQuit(quitKeys []string, timeout time.Duration) error {
+	if len(quitKeys) == 0 {
+		quitKeys = []string{"C-c", "C-c"}
+	}
+	for _, k := range quitKeys {
+		sendCmd := Command("send-keys", "-t", t.sanitizedName, k)
+		if err := t.cmdExec.Run(sendCmd); err != nil {
+			return fmt.Errorf("send-keys %q: %w", k, err)
+		}
+		time.Sleep(keySendInterval)
+	}
+
+	deadline := time.Now().Add(timeout)
+	for {
+		if !t.DoesSessionExist() {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("agent did not exit within %s", timeout)
+		}
+		time.Sleep(quitPollInterval)
+	}
+}
+
 // HasUpdated checks if the tmux pane content has changed since the last tick. It also returns true if
 // the tmux pane has a prompt for aider or claude code.
 func (t *TmuxSession) HasUpdated() (updated bool, hasPrompt bool) {

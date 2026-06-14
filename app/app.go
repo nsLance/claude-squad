@@ -375,7 +375,7 @@ func newHome(ctx context.Context, program string, autoYes bool, workspaceID stri
 // workspace CRUD on the workspaces view.
 var sessionActionKeys = map[keys.KeyName]struct{}{
 	keys.KeySubmit:   {},
-	keys.KeyCheckout: {}, keys.KeyResume: {}, keys.KeyRestart: {},
+	keys.KeyCheckout: {}, keys.KeyResume: {}, keys.KeyRestart: {}, keys.KeyRecycle: {},
 	keys.KeyFinish: {}, keys.KeyMoveUp: {}, keys.KeyMoveDown: {}, keys.KeyTab: {},
 	keys.KeyShiftUp: {}, keys.KeyShiftDown: {},
 }
@@ -1131,6 +1131,23 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 			return m, m.handleError(err)
 		}
 		return m, tea.Batch(tea.WindowSize(), m.instanceChanged())
+	case keys.KeyRecycle:
+		// Rebuild the session: relaunch the agent with its continue command in
+		// the same worktree. A running agent is asked to quit gracefully first
+		// (so it can flush memory / commit) before being relaunched.
+		selected := m.list.GetSelectedInstance()
+		if selected == nil || selected.Status == session.Loading {
+			return m, nil
+		}
+		ac := m.appConfig.AgentCommandFor(selected.Program)
+		m.showHelpScreen(helpTypeInstanceRecycle{}, func() {
+			if err := selected.Recycle(ac.Resume, ac.QuitKeys); err != nil {
+				m.handleError(err)
+				return
+			}
+			m.instanceChanged()
+		})
+		return m, tea.WindowSize()
 	case keys.KeyFinish:
 		selected := m.list.GetSelectedInstance()
 		if selected == nil || selected.Status == session.Loading {

@@ -126,6 +126,7 @@ The create form has sensible defaults — type a name and press `Enter` straight
 
 ##### Session Management
 - `R` - Restart a session whose agent process exited (keeps the worktree)
+- `X` - Rebuild: relaunch the agent in the same worktree, continuing its conversation (a running agent is asked to quit gracefully first)
 - `↑/j`, `↓/k` - Move the cursor
 
 ##### Actions
@@ -223,6 +224,28 @@ Each profile has two fields:
 | `program` | Shell command used to launch the agent for that profile  |
 
 If no profiles are defined, Claude Squad uses `default_program` directly as the launch command (the default is `claude`).
+
+#### Rebuild / continue command (`X`)
+
+`X` rebuilds the selected session: it relaunches the agent **in the same worktree, continuing its previous conversation**. If the agent is still running it is first asked to quit gracefully (its quit keys are sent and Claude Squad waits for it to exit) so it can flush memory or commit before shutting down.
+
+What command relaunches each agent, and which keys ask it to quit, are configured globally per agent under `agent_commands`, keyed by the agent's base program name:
+
+```json
+{
+  "agent_commands": {
+    "claude": { "resume": "claude --continue",   "quit_keys": ["C-c", "C-c"] },
+    "codex":  { "resume": "codex resume --last",  "quit_keys": ["C-c", "C-c"] }
+  }
+}
+```
+
+| Field       | Description                                                                                  |
+|-------------|----------------------------------------------------------------------------------------------|
+| `resume`    | Command used to relaunch the agent so it continues its prior conversation                     |
+| `quit_keys` | tmux `send-keys` tokens sent to a running agent to ask it to exit gracefully (e.g. `C-c C-c`, or `["/exit", "Enter"]`) |
+
+Any agent or field you don't configure falls back to built-in defaults (`claude`, `codex`, `aider`, `gemini`); an unrecognized agent simply relaunches with its original command and a double Ctrl-C.
 
 ### FAQs
 

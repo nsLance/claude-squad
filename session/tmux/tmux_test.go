@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"claude-squad/cmd/cmd_test"
 
@@ -113,4 +114,74 @@ func TestStartTmuxSession(t *testing.T) {
 	// File should be open
 	_, err = ptyFactory.files[1].Stat()
 	require.NoError(t, err)
+}
+
+func TestGracefulQuit(t *testing.T) {
+	// Speed up the polling/key-spacing for the test.
+	origSend, origPoll := keySendInterval, quitPollInterval
+	keySendInterval, quitPollInterval = time.Millisecond, time.Millisecond
+	defer func() { keySendInterval, quitPollInterval = origSend, origPoll }()
+
+	t.Run("sends quit keys then returns once the session is gone", func(t *testing.T) {
+		var sent []string
+		hasSessionCalls := 0
+		exe := cmd_test.MockCmdExec{
+			RunFunc: func(c *exec.Cmd) error {
+				s := cmd2.ToString(c)
+				if strings.Contains(s, "send-keys") {
+					sent = append(sent, s)
+					return nil
+				}
+				if strings.Contains(s, "has-session") {
+					hasSessionCalls++
+					// Alive for the first two polls, then gone.
+					if hasSessionCalls <= 2 {
+						return nil
+					}
+					return fmt.Errorf("no such session")
+				}
+				return nil
+			},
+		}
+		session := newTmuxSession("gq", "claude", "", NewMockPtyFactory(t), exe)
+
+		err := session.GracefulQuit([]string{"C-c", "C-c"}, time.Second)
+		require.NoError(t, err)
+		require.Equal(t, []string{
+			"tmux -L claudesquad send-keys -t claudesquad_gq C-c",
+			"tmux -L claudesquad send-keys -t claudesquad_gq C-c",
+		}, sent)
+	})
+
+	t.Run("returns error if the agent never exits", func(t *testing.T) {
+		exe := cmd_test.MockCmdExec{
+			RunFunc: func(c *exec.Cmd) error {
+				return nil // send-keys ok; has-session always succeeds → still alive
+			},
+		}
+		session := newTmuxSession("gq2", "claude", "", NewMockPtyFactory(t), exe)
+
+		err := session.GracefulQuit([]string{"C-c"}, 10*time.Millisecond)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "did not exit")
+	})
+
+	t.Run("empty quitKeys defaults to double Ctrl-C", func(t *testing.T) {
+		var sent []string
+		exe := cmd_test.MockCmdExec{
+			RunFunc: func(c *exec.Cmd) error {
+				s := cmd2.ToString(c)
+				if strings.Contains(s, "send-keys") {
+					sent = append(sent, s)
+				}
+				if strings.Contains(s, "has-session") {
+					return fmt.Errorf("gone")
+				}
+				return nil
+			},
+		}
+		session := newTmuxSession("gq3", "claude", "", NewMockPtyFactory(t), exe)
+		require.NoError(t, session.GracefulQuit(nil, time.Second))
+		require.Len(t, sent, 2)
+	})
 }

@@ -93,6 +93,7 @@ var keyMenuGroup = map[keys.KeyName]menuGroup{
 	keys.KeySubmit:             menuGroupAction,
 	keys.KeyResume:             menuGroupAction,
 	keys.KeyRestart:            menuGroupAction,
+	keys.KeyRecycle:            menuGroupAction,
 	keys.KeyCheckout:           menuGroupAction,
 	keys.KeyFinish:             menuGroupAction,
 	keys.KeyShiftUp:            menuGroupAction,
@@ -227,6 +228,8 @@ func (m *Menu) addInstanceOptions() {
 		actionGroup = append(actionGroup, keys.KeyCheckout)
 		actionGroup = append(actionGroup, keys.KeyFinish)
 	}
+	// Recycle ("rebuild & continue") works in every non-loading state.
+	actionGroup = append(actionGroup, keys.KeyRecycle)
 
 	// Navigation group (when in diff tab)
 	if m.activeTab == DiffTab || m.activeTab == TerminalTab {
