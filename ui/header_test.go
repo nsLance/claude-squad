@@ -12,6 +12,7 @@ func TestHeader_BannerContent(t *testing.T) {
 	h := NewHeader()
 	h.SetSize(120)
 	h.Update("1.0.18", "backend", 3, 2, "sessions", "")
+	h.SetShortcuts([]MenuEntry{{Key: "q", Desc: "quit"}})
 
 	out := h.String()
 	require.Contains(t, out, "claude-squad v1.0.18")
@@ -19,8 +20,9 @@ func TestHeader_BannerContent(t *testing.T) {
 	require.Contains(t, out, "backend")
 	require.Contains(t, out, "sessions:")
 	require.Contains(t, out, "workspaces:")
-	// Hotkey hints present when there's room.
-	require.Contains(t, out, "cmd")
+	// Navigation primitives and the contextual shortcuts render in the box.
+	require.Contains(t, out, "command")
+	require.Contains(t, out, "filter")
 	require.Contains(t, out, "quit")
 
 	// Exactly the fixed number of rows.
@@ -33,20 +35,23 @@ func TestHeader_Breadcrumb(t *testing.T) {
 	h.Update("1.0.18", "backend", 1, 1, "workspaces/sessions(backend)", "")
 
 	lines := strings.Split(h.String(), "\n")
-	require.Len(t, lines, 2)
-	require.Contains(t, lines[1], "workspaces")
-	require.Contains(t, lines[1], "sessions(backend)")
-	require.Contains(t, lines[1], "›", "multi-segment breadcrumb should be joined with a separator")
+	require.Len(t, lines, headerHeight)
+	// The breadcrumb is the last row, beneath the box.
+	crumb := lines[len(lines)-1]
+	require.Contains(t, crumb, "workspaces")
+	require.Contains(t, crumb, "sessions(backend)")
+	require.Contains(t, crumb, "›", "multi-segment breadcrumb should be joined with a separator")
 }
 
-func TestHeader_NarrowDropsHints(t *testing.T) {
+func TestHeader_NarrowFallback(t *testing.T) {
 	h := NewHeader()
-	h.SetSize(30) // too narrow for context block + hints
+	h.SetSize(30) // too narrow for the box
 	h.Update("1.0.18", "backend", 3, 2, "sessions", "")
 
 	lines := strings.Split(h.String(), "\n")
-	require.LessOrEqual(t, lipgloss.Width(lines[0]), 30, "banner must not overflow width")
-	// Context block (logo) is kept even when hints are dropped.
+	for i, l := range lines {
+		require.LessOrEqualf(t, lipgloss.Width(l), 30, "row %d must not overflow width", i)
+	}
 	require.Contains(t, lines[0], "claude-squad")
 }
 

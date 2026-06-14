@@ -438,14 +438,15 @@ func (m *home) refreshWorkspacesView() {
 func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	m.lastWindowSize = msg
 
-	// Menu takes 10% of height; the header + content region share the other 90%.
-	regionHeight := int(float32(msg.Height) * 0.9)
-	menuHeight := msg.Height - regionHeight - 1      // minus 1 for error box
-	m.errBox.SetSize(int(float32(msg.Width)*0.9), 1) // error box takes 1 row
+	// Layout (top→bottom): header band, content region, a one-row bottom prompt
+	// (the ":"/"/" bar; blank otherwise), and a one-row error box. The shortcut
+	// menu now lives in the header, so the bottom no longer needs ~10% of height.
+	const barHeight = 1
+	const errHeight = 1
+	m.errBox.SetSize(int(float32(msg.Width)*0.9), errHeight)
 
-	// Carve the header out of the top of the content region.
 	m.header.SetSize(msg.Width)
-	contentHeight := regionHeight - m.header.Height()
+	contentHeight := msg.Height - m.header.Height() - barHeight - errHeight
 	if contentHeight < 1 {
 		contentHeight = 1
 	}
@@ -470,9 +471,8 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	if err := m.list.SetSessionPreviewSize(previewWidth, previewHeight); err != nil {
 		log.ErrorLog.Print(err)
 	}
-	m.menu.SetSize(msg.Width, menuHeight)
-	m.cmdBar.SetSize(msg.Width, menuHeight)
-	m.filterBar.SetSize(msg.Width, menuHeight)
+	m.cmdBar.SetSize(msg.Width, barHeight)
+	m.filterBar.SetSize(msg.Width, barHeight)
 }
 
 func (m *home) Init() tea.Cmd {
@@ -1897,16 +1897,18 @@ func (m *home) clearFilter() {
 	m.workspacesView.SetFilter("")
 }
 
-// commandOrMenu renders the command/filter bar in place of the menu while
-// capturing input, so the bottom region keeps a stable height.
-func (m *home) commandOrMenu() string {
+// bottomBar renders the ":"/"/" prompt line at the bottom while capturing
+// input. The contextual shortcuts moved to the top-left header box (k9s-style),
+// so otherwise the bottom region is a single reserved blank line that keeps the
+// layout height stable.
+func (m *home) bottomBar() string {
 	switch m.state {
 	case stateCommand:
 		return m.cmdBar.String()
 	case stateFilter:
 		return m.filterBar.String()
 	}
-	return m.menu.String()
+	return ""
 }
 
 // updateHeader refreshes the top banner's context data before each render. The
@@ -1928,6 +1930,9 @@ func (m *home) updateHeader() {
 		m.breadcrumb(),
 		m.filterText,
 	)
+	// The contextual shortcuts (formerly the bottom menu) now render in the
+	// top-left header box, k9s-style.
+	m.header.SetShortcuts(m.menu.Entries())
 }
 
 func (m *home) View() string {
@@ -1941,7 +1946,7 @@ func (m *home) View() string {
 		lipgloss.Left,
 		m.header.String(),
 		m.currentView().String(),
-		m.commandOrMenu(),
+		m.bottomBar(),
 		m.errBox.String(),
 	)
 

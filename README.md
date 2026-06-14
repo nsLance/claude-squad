@@ -101,7 +101,7 @@ NOTE: The default program is `claude` and we recommend using the latest version.
 The UI is a **table-primary, drill-down** interface modeled on [k9s], mapping
 workspaces → namespaces and sessions → pods:
 
-- A **top banner** shows context (version, active workspace as `ns:`, session/workspace counts) with hotkey hints, plus a **breadcrumb** of the current view.
+- A **top band** (a9s-style) shows a bordered shortcut box on the left — context (version, active workspace as `ns:`, session/workspace counts) plus the contextual keybindings — and a stylized `cs` wordmark on the right, with a **breadcrumb** of the current view beneath it.
 - The main area is a **columnar table** (sortable, with a `▸` cursor): a workspaces list, or a sessions list (`NAME / WORKSPACE / BRANCH / STATUS / DIFF / AGE`).
 - **Drill down** with `↵` (workspace → its sessions → session detail) and **back out** with `esc`.
 

@@ -104,6 +104,29 @@ var keyMenuGroup = map[keys.KeyName]menuGroup{
 	keys.KeySubmitName:         menuGroupAction,
 }
 
+// MenuEntry is a single key/description pair plus whether it's a "primary"
+// action. The header consumes these to render the k9s-style shortcut box.
+type MenuEntry struct {
+	Key    string
+	Desc   string
+	Action bool
+}
+
+// Entries returns the menu's current options as key/desc pairs so they can be
+// rendered as the shortcut grid in the top-left header box.
+func (m *Menu) Entries() []MenuEntry {
+	out := make([]MenuEntry, 0, len(m.options))
+	for _, k := range m.options {
+		b := keys.GlobalkeyBindings[k]
+		out = append(out, MenuEntry{
+			Key:    b.Help().Key,
+			Desc:   b.Help().Desc,
+			Action: keyMenuGroup[k] == menuGroupAction,
+		})
+	}
+	return out
+}
+
 func NewMenu() *Menu {
 	return &Menu{
 		options:   defaultMenuOptions,
