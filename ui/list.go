@@ -370,6 +370,10 @@ func (r *InstanceRenderer) Render(i *session.Instance, idx int, selected bool, h
 }
 
 func (l *List) String() string {
+	if csTableUI() {
+		return l.RenderTable()
+	}
+
 	header := l.renderHeader()
 	headerLines := strings.Split(header, "\n")
 
