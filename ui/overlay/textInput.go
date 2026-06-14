@@ -44,7 +44,14 @@ type TextInputOverlay struct {
 	profilePicker *ProfilePicker
 	branchPicker  *BranchPicker
 	numStops      int // total number of focus stops
+	// submitOnEnter makes Enter submit the form from any focus stop (used by the
+	// create form so it can be "Entered through" with defaults). The prompt is
+	// then effectively single-line.
+	submitOnEnter bool
 }
+
+// SetSubmitOnEnter makes Enter submit the form from anywhere in it.
+func (t *TextInputOverlay) SetSubmitOnEnter(v bool) { t.submitOnEnter = v }
 
 // NewTextInputOverlay creates a new text input overlay with the given title and initial value.
 func NewTextInputOverlay(title string, initialValue string) *TextInputOverlay {
@@ -189,6 +196,13 @@ func (t *TextInputOverlay) HandleKeyPress(msg tea.KeyMsg) (bool, bool) {
 		t.Canceled = true
 		return true, false
 	case tea.KeyEnter:
+		if t.submitOnEnter {
+			t.Submitted = true
+			if t.OnSubmit != nil {
+				t.OnSubmit()
+			}
+			return true, false
+		}
 		if t.isEnterButton() {
 			t.Submitted = true
 			if t.OnSubmit != nil {

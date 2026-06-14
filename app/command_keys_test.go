@@ -13,7 +13,7 @@ import (
 func TestKeyVerbsAreCaseSensitive(t *testing.T) {
 	require.Equal(t, keys.KeyRestart, keys.GlobalKeyStringsMap["R"])
 	require.Equal(t, keys.KeyResume, keys.GlobalKeyStringsMap["r"])
-	require.Equal(t, keys.KeyPrompt, keys.GlobalKeyStringsMap["N"])
+	require.Equal(t, keys.KeyKill, keys.GlobalKeyStringsMap["D"])
 	require.Equal(t, keys.KeyNew, keys.GlobalKeyStringsMap["n"])
 }
 

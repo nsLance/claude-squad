@@ -117,13 +117,14 @@ Press `:` to open the command bar (the primary way to jump around):
 
 Every keybinding is also runnable as a command, case-sensitively: `:c` (checkout), `:p` (push), `:r` (resume), `:R` (restart), `:F` (finish), `:A` (add workspace), plus word forms like `:checkout`, `:push`.
 
-##### Create / delete (context-aware)
+##### Create / delete (context-aware, one key each)
 `n` and `D` act on whatever the current view lists:
 - On the **workspaces** list: `n` creates a workspace, `D` deletes one (refused while it still has sessions).
-- Inside a **workspace** (after `↵`): `n` creates a session *in that workspace*, `D` deletes the selected session.
+- Inside a **workspace** (after `↵`): `n` opens the session create form (name → prompt/branch/profile), `D` deletes the selected session.
+
+The create form has sensible defaults — type a name and press `Enter` straight through to create on a new branch with the workspace's default profile; `Tab` to set a prompt, pick a branch, or choose a profile.
 
 ##### Session Management
-- `N` - Create a new session with a prompt
 - `R` - Restart a session whose agent process exited (keeps the worktree)
 - `↑/j`, `↓/k` - Move the cursor
 

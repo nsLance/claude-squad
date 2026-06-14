@@ -25,8 +25,7 @@ const (
 	// KeyRestart soft-resets a Running session whose tmux process exited: it
 	// relaunches the agent in the existing worktree (worktree/branch untouched).
 	KeyRestart
-	KeyPrompt // New key for entering a prompt
-	KeyHelp   // Key for showing help screen
+	KeyHelp // Key for showing help screen
 
 	// Diff keybindings
 	KeyShiftUp
@@ -55,7 +54,6 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"shift+down": KeyShiftDown,
 	"J":          KeyMoveDown,
 	"K":          KeyMoveUp,
-	"N":          KeyPrompt,
 	"enter":      KeyEnter,
 	"o":          KeyEnter,
 	"n":          KeyNew,
@@ -112,10 +110,6 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeySubmit: key.NewBinding(
 		key.WithKeys("p"),
 		key.WithHelp("p", "push branch"),
-	),
-	KeyPrompt: key.NewBinding(
-		key.WithKeys("N"),
-		key.WithHelp("N", "new with prompt"),
 	),
 	KeyCheckout: key.NewBinding(
 		key.WithKeys("c"),

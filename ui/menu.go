@@ -57,7 +57,7 @@ type Menu struct {
 }
 
 var defaultMenuOptions = []keys.KeyName{
-	keys.KeyNew, keys.KeyPrompt,
+	keys.KeyNew,
 	keys.KeyAddWorkspace,
 	keys.KeyHelp, keys.KeyQuit,
 }
@@ -88,7 +88,6 @@ const (
 // here for them to render with the correct separator placement.
 var keyMenuGroup = map[keys.KeyName]menuGroup{
 	keys.KeyNew:               menuGroupInstance,
-	keys.KeyPrompt:             menuGroupInstance,
 	keys.KeyKill:               menuGroupInstance,
 	keys.KeyEnter:              menuGroupAction,
 	keys.KeySubmit:             menuGroupAction,

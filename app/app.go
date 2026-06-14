@@ -374,7 +374,7 @@ func newHome(ctx context.Context, program string, autoYes bool, workspaceID stri
 // (n) and Kill (D) are intentionally absent — they are context-aware and do
 // workspace CRUD on the workspaces view.
 var sessionActionKeys = map[keys.KeyName]struct{}{
-	keys.KeyPrompt: {}, keys.KeySubmit: {},
+	keys.KeySubmit:   {},
 	keys.KeyCheckout: {}, keys.KeyResume: {}, keys.KeyRestart: {},
 	keys.KeyFinish: {}, keys.KeyMoveUp: {}, keys.KeyMoveDown: {}, keys.KeyTab: {},
 	keys.KeyShiftUp: {}, keys.KeyShiftDown: {},
@@ -1018,42 +1018,6 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 	switch name {
 	case keys.KeyHelp:
 		return m.showHelpScreen(helpTypeGeneral{}, nil)
-	case keys.KeyPrompt:
-		if m.list.NumInstances() >= GlobalInstanceLimit {
-			return m, m.handleError(
-				fmt.Errorf("you can't create more than %d instances", GlobalInstanceLimit))
-		}
-
-		if cmd := m.requireWorkspace(); cmd != nil {
-			return m, cmd
-		}
-		repoPath := m.sessionPath()
-
-		// Start a background fetch so branches are up to date by the time the picker opens
-		fetchCmd := func() tea.Msg {
-			git.FetchBranches(repoPath)
-			return nil
-		}
-
-		program, profileName := m.resolveWorkspaceProgram()
-		instance, err := session.NewInstance(session.InstanceOptions{
-			Title:       "",
-			Path:        repoPath,
-			Program:     program,
-			WorkspaceID: m.scopeWorkspaceID(),
-			ProfileName: profileName,
-		})
-		if err != nil {
-			return m, m.handleError(err)
-		}
-
-		m.newInstanceFinalizer = m.list.AddInstance(instance)
-		m.list.SetSelectedInstance(m.list.NumInstances() - 1)
-		m.state = stateNew
-		m.menu.SetState(ui.StateNewInstance)
-		m.promptAfterName = true
-
-		return m, fetchCmd
 	case keys.KeyNew:
 		// Context-aware create: a new workspace on the workspaces view, a new
 		// session everywhere else.
@@ -1464,7 +1428,11 @@ func (m *home) handleError(err error) tea.Cmd {
 }
 
 func (m *home) newPromptOverlay() *overlay.TextInputOverlay {
-	return overlay.NewTextInputOverlayWithBranchPicker("Enter prompt", "", m.appConfig.GetProfiles())
+	o := overlay.NewTextInputOverlayWithBranchPicker(
+		"New session — prompt (optional). Tab for branch/profile · Enter to create",
+		"", m.appConfig.GetProfiles())
+	o.SetSubmitOnEnter(true)
+	return o
 }
 
 // cancelPromptOverlay cancels the prompt overlay, cleaning up unstarted instances.
@@ -1605,10 +1573,11 @@ func (m *home) startNewSession() (tea.Model, tea.Cmd) {
 	if cmd := m.requireWorkspace(); cmd != nil {
 		return m, cmd
 	}
+	repoPath := m.sessionPath()
 	program, profileName := m.resolveWorkspaceProgram()
 	instance, err := session.NewInstance(session.InstanceOptions{
 		Title:       "",
-		Path:        m.sessionPath(),
+		Path:        repoPath,
 		Program:     program,
 		WorkspaceID: m.scopeWorkspaceID(),
 		ProfileName: profileName,
@@ -1620,8 +1589,15 @@ func (m *home) startNewSession() (tea.Model, tea.Cmd) {
 	m.newInstanceFinalizer = m.list.AddInstance(instance)
 	m.list.SetSelectedInstance(m.list.NumInstances() - 1)
 	m.state = stateNew
+	// Always proceed to the create form after naming (single unified create
+	// flow — there is no longer a separate quick/prompt split).
+	m.promptAfterName = true
 	m.menu.SetState(ui.StateNewInstance)
-	return m, nil
+	// Refresh branches in the background so the create form's picker is current.
+	return m, func() tea.Msg {
+		git.FetchBranches(repoPath)
+		return nil
+	}
 }
 
 // handleCommandState routes keypresses while the ":" command bar is open. It
@@ -1758,7 +1734,6 @@ var actionWordToKey = map[string]string{
 	"finish":       "F",
 	"attach":       "enter",
 	"open":         "enter",
-	"prompt":       "N",
 	"add":          "A",
 	"addworkspace": "A",
 }
