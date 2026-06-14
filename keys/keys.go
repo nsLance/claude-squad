@@ -153,7 +153,7 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 
 	KeyRecycle: key.NewBinding(
 		key.WithKeys("X"),
-		key.WithHelp("X", "rebuild (continue)"),
+		key.WithHelp("X", "rebuild"),
 	),
 
 	// -- Special keybindings --
