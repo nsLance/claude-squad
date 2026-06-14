@@ -102,7 +102,7 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	),
 	KeyKill: key.NewBinding(
 		key.WithKeys("D"),
-		key.WithHelp("D", "kill"),
+		key.WithHelp("D", "delete"),
 	),
 	KeyHelp: key.NewBinding(
 		key.WithKeys("?"),

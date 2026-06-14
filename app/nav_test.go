@@ -23,6 +23,7 @@ func newNavTestHome(t *testing.T) *home {
 		cmdBar:       ui.NewCommandBar(),
 		filterBar:    ui.NewBarWithPrompt("/"),
 		menu:         ui.NewMenu(),
+		errBox:       ui.NewErrBox(),
 		tabbedWindow: ui.NewTabbedWindow(ui.NewPreviewPane(), ui.NewDiffPane(), ui.NewTerminalPane()),
 	}
 	h.list = ui.NewList(&h.spinner, false)
@@ -72,7 +73,13 @@ func TestNav_SessionActionGuard(t *testing.T) {
 	h := newNavTestHome(t)
 	// On the workspaces view, session actions are gated out.
 	require.Equal(t, ui.ViewWorkspaces, h.currentView().Kind())
-	require.True(t, isSessionActionKey(keys.KeyKill))
+	// Session-only actions stay gated on the workspaces view...
+	require.True(t, isSessionActionKey(keys.KeyCheckout))
+	require.True(t, isSessionActionKey(keys.KeySubmit))
+	// ...but the unified CRUD keys (n/D) and nav/help are not — they are
+	// context-aware and do workspace CRUD here.
+	require.False(t, isSessionActionKey(keys.KeyNew))
+	require.False(t, isSessionActionKey(keys.KeyKill))
 	require.False(t, isSessionActionKey(keys.KeyHelp))
 
 	// On the sessions view they are allowed (the guard only fires on workspaces).

@@ -48,6 +48,9 @@ type Menu struct {
 	state         MenuState
 	instance      *session.Instance
 	activeTab     int
+	// workspacesMode shows workspace-CRUD options instead of session options
+	// (set when the workspaces view is active).
+	workspacesMode bool
 
 	// keyDown is the key which is pressed. The default is -1.
 	keyDown keys.KeyName
@@ -56,6 +59,14 @@ type Menu struct {
 var defaultMenuOptions = []keys.KeyName{
 	keys.KeyNew, keys.KeyPrompt,
 	keys.KeyAddWorkspace, keys.KeySwitchWorkspace,
+	keys.KeyHelp, keys.KeyQuit,
+}
+
+// workspacesMenuOptions are shown on the workspaces view: the same n/D/↵ verbs
+// as sessions, scoped to workspace CRUD.
+var workspacesMenuOptions = []keys.KeyName{
+	keys.KeyNew, keys.KeyKill,
+	keys.KeyEnter, keys.KeySwitchWorkspace,
 	keys.KeyHelp, keys.KeyQuit,
 }
 var newInstanceMenuOptions = []keys.KeyName{keys.KeySubmitName}
@@ -138,8 +149,22 @@ func (m *Menu) SetActiveTab(tab int) {
 	m.updateOptions()
 }
 
+// SetWorkspacesMode toggles the workspace-CRUD menu (shown on the workspaces view).
+func (m *Menu) SetWorkspacesMode(on bool) {
+	if m.workspacesMode == on {
+		return
+	}
+	m.workspacesMode = on
+	m.updateOptions()
+}
+
 // updateOptions updates the menu options based on current state and instance
 func (m *Menu) updateOptions() {
+	// The workspaces view shows its own CRUD set in the normal browsing states.
+	if m.workspacesMode && (m.state == StateDefault || m.state == StateEmpty) {
+		m.options = workspacesMenuOptions
+		return
+	}
 	switch m.state {
 	case StateEmpty:
 		m.options = defaultMenuOptions

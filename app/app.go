@@ -387,9 +387,11 @@ func newHome(ctx context.Context, program string, autoYes bool, workspaceID stri
 }
 
 // sessionActionKeys are keybindings that operate on the selected session and so
-// only make sense on the sessions / detail views, not the workspaces list.
+// only make sense on the sessions / detail views, not the workspaces list. New
+// (n) and Kill (D) are intentionally absent — they are context-aware and do
+// workspace CRUD on the workspaces view.
 var sessionActionKeys = map[keys.KeyName]struct{}{
-	keys.KeyNew: {}, keys.KeyPrompt: {}, keys.KeyKill: {}, keys.KeySubmit: {},
+	keys.KeyPrompt: {}, keys.KeySubmit: {},
 	keys.KeyCheckout: {}, keys.KeyResume: {}, keys.KeyRestart: {},
 	keys.KeyFinish: {}, keys.KeyMoveUp: {}, keys.KeyMoveDown: {}, keys.KeyTab: {},
 	keys.KeyShiftUp: {}, keys.KeyShiftDown: {},
@@ -1071,6 +1073,11 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 
 		return m, fetchCmd
 	case keys.KeyNew:
+		// Context-aware create: a new workspace on the workspaces view, a new
+		// session everywhere else.
+		if m.currentView().Kind() == ui.ViewWorkspaces {
+			return m.openAddWorkspace()
+		}
 		return m.startNewSession()
 	case keys.KeyUp:
 		if m.currentView().Kind() == ui.ViewWorkspaces {
@@ -1097,44 +1104,12 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		m.menu.SetActiveTab(m.tabbedWindow.GetActiveTab())
 		return m, m.instanceChanged()
 	case keys.KeyKill:
-		selected := m.list.GetSelectedInstance()
-		if selected == nil || selected.Status == session.Loading {
-			return m, nil
+		// Context-aware delete: a workspace on the workspaces view, a session
+		// everywhere else.
+		if m.currentView().Kind() == ui.ViewWorkspaces {
+			return m.confirmDeleteWorkspace()
 		}
-
-		// Create the kill action as a tea.Cmd
-		killAction := func() tea.Msg {
-			// Get worktree and check if branch is checked out
-			worktree, err := selected.GetGitWorktree()
-			if err != nil {
-				return err
-			}
-
-			checkedOut, err := worktree.IsBranchCheckedOut()
-			if err != nil {
-				return err
-			}
-
-			if checkedOut {
-				return fmt.Errorf("instance %s is currently checked out", selected.Title)
-			}
-
-			// Clean up terminal session for this instance
-			m.tabbedWindow.CleanupTerminalForInstance(selected.Title)
-
-			// Delete from storage first
-			if err := m.storage.DeleteInstance(selected.Title); err != nil {
-				return err
-			}
-
-			// Then kill the instance
-			m.list.Kill()
-			return instanceChangedMsg{}
-		}
-
-		// Show confirmation modal
-		message := fmt.Sprintf("[!] Kill session '%s'?", selected.Title)
-		return m, m.confirmAction(message, killAction)
+		return m.confirmKillSession()
 	case keys.KeySubmit:
 		selected := m.list.GetSelectedInstance()
 		if selected == nil || selected.Status == session.Loading {
@@ -1226,15 +1201,7 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		}
 		return m, m.runFinishInteractive(selected)
 	case keys.KeyAddWorkspace:
-		m.textInputOverlay = overlay.NewTextInputOverlay(
-			"Add workspace (enter a path; new dirs are git-init'd automatically)",
-			"",
-		)
-		m.state = stateAddWorkspace
-		// tea.WindowSize triggers updateHandleWindowSizeEvent which calls
-		// m.textInputOverlay.SetSize. Without this, the embedded textarea has
-		// width 0 → renders one char per line.
-		return m, tea.WindowSize()
+		return m.openAddWorkspace()
 	case keys.KeyEnter:
 		// Drill-down: Enter on the workspaces view opens that workspace's
 		// sessions; Enter on the sessions view opens the selected session's
@@ -1763,11 +1730,23 @@ func (m *home) executeCommand(input string) (tea.Model, tea.Cmd) {
 		m.viewStack = []ui.View{m.workspacesView, m.sessionsView}
 		return done(m, tea.Batch(tea.WindowSize(), m.instanceChanged()))
 	case "new":
-		// startNewSession sets stateNew on success (or returns an error with
-		// state reset to default below).
 		m.state = stateDefault
 		m.cmdBar.Reset()
+		// Context-aware: a workspace on the workspaces view, else a session.
+		if m.currentView().Kind() == ui.ViewWorkspaces {
+			return m.openAddWorkspace()
+		}
+		// startNewSession sets stateNew on success (or returns an error with
+		// state reset to default above).
 		return m.startNewSession()
+	case "delete":
+		m.state = stateDefault
+		m.cmdBar.Reset()
+		// Context-aware delete of the current selection.
+		if m.currentView().Kind() == ui.ViewWorkspaces {
+			return m.confirmDeleteWorkspace()
+		}
+		return m.confirmKillSession()
 	case "quit":
 		return m.handleQuit()
 	case "help":
@@ -1777,6 +1756,92 @@ func (m *home) executeCommand(input string) (tea.Model, tea.Cmd) {
 	default:
 		return fail(fmt.Sprintf("unknown command: %s", verb))
 	}
+}
+
+// openAddWorkspace opens the "add workspace" path-entry overlay. Shared by the
+// A key and the context-aware n key (on the workspaces view) and :new.
+func (m *home) openAddWorkspace() (tea.Model, tea.Cmd) {
+	m.textInputOverlay = overlay.NewTextInputOverlay(
+		"Add workspace (enter a path; new dirs are git-init'd automatically)",
+		"",
+	)
+	m.state = stateAddWorkspace
+	// tea.WindowSize triggers updateHandleWindowSizeEvent which calls
+	// m.textInputOverlay.SetSize. Without this, the embedded textarea has
+	// width 0 → renders one char per line.
+	return m, tea.WindowSize()
+}
+
+// confirmKillSession kills the selected session after a confirmation. Shared by
+// the D key and the :delete command.
+func (m *home) confirmKillSession() (tea.Model, tea.Cmd) {
+	selected := m.list.GetSelectedInstance()
+	if selected == nil || selected.Status == session.Loading {
+		return m, nil
+	}
+	killAction := func() tea.Msg {
+		worktree, err := selected.GetGitWorktree()
+		if err != nil {
+			return err
+		}
+		checkedOut, err := worktree.IsBranchCheckedOut()
+		if err != nil {
+			return err
+		}
+		if checkedOut {
+			return fmt.Errorf("instance %s is currently checked out", selected.Title)
+		}
+		m.tabbedWindow.CleanupTerminalForInstance(selected.Title)
+		if err := m.storage.DeleteInstance(selected.Title); err != nil {
+			return err
+		}
+		m.list.Kill()
+		return instanceChangedMsg{}
+	}
+	return m, m.confirmAction(fmt.Sprintf("[!] Kill session '%s'?", selected.Title), killAction)
+}
+
+// sessionCountFor returns how many sessions currently belong to a workspace.
+func (m *home) sessionCountFor(wsID string) int {
+	n := 0
+	for _, inst := range m.list.GetInstances() {
+		if inst.WorkspaceID == wsID {
+			n++
+		}
+	}
+	return n
+}
+
+// confirmDeleteWorkspace deletes the highlighted workspace after a confirmation,
+// refusing if it still has sessions (they'd be orphaned — kill them first).
+func (m *home) confirmDeleteWorkspace() (tea.Model, tea.Cmd) {
+	id := m.workspacesView.SelectedWorkspaceID()
+	if id == "" {
+		return m, nil
+	}
+	reg := config.LoadWorkspaceRegistry()
+	ws := reg.Get(id)
+	if ws == nil {
+		return m, nil
+	}
+	if n := m.sessionCountFor(id); n > 0 {
+		return m, m.handleError(fmt.Errorf(
+			"can't delete workspace %q: %d active session(s) — kill them first", ws.DisplayName, n))
+	}
+	name := ws.DisplayName
+	action := func() tea.Msg {
+		if err := config.LoadWorkspaceRegistry().Remove(id); err != nil {
+			return err
+		}
+		// If we just deleted the active workspace, drop the focus.
+		if m.workspaceID == id {
+			m.workspaceID = ""
+			m.list.SetActiveWorkspace("")
+			m.list.SetActiveWorkspaceID("")
+		}
+		return instanceChangedMsg{}
+	}
+	return m, m.confirmAction(fmt.Sprintf("[!] Delete workspace '%s'?", name), action)
 }
 
 // handleFilterState routes keypresses while the "/" filter bar is open. The
@@ -1844,6 +1909,7 @@ func (m *home) commandOrMenu() string {
 
 // updateHeader refreshes the top banner's context data before each render.
 func (m *home) updateHeader() {
+	m.menu.SetWorkspacesMode(m.currentView().Kind() == ui.ViewWorkspaces)
 	reg := config.LoadWorkspaceRegistry()
 	m.header.Update(
 		config.Version,
