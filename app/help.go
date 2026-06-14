@@ -57,6 +57,7 @@ func (h helpTypeGeneral) toContent() string {
 		"",
 		headerStyle.Render("Navigation (k9s-style):"),
 		keyStyle.Render(":")+descStyle.Render("         - Command bar: :workspaces, :ws <name>, :sessions, :new, :quit"),
+		keyStyle.Render(" ")+descStyle.Render("           …and any shortcut as :<key> (e.g. :c :p :r :R :F) or word (:checkout, :push)"),
 		keyStyle.Render("/")+descStyle.Render("         - Filter the current table live (esc clears)"),
 		keyStyle.Render("↵")+descStyle.Render("         - Drill in (workspace → its sessions → session detail)"),
 		keyStyle.Render("esc")+descStyle.Render("       - Clear filter, then drill back out (pops the nav stack)"),

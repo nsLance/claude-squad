@@ -1691,6 +1691,7 @@ func (m *home) handleCommandState(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // and stays in stateCommand so the user can edit and retry.
 func (m *home) executeCommand(input string) (tea.Model, tea.Cmd) {
 	verb, args, _ := ui.ParseCommand(input)
+	rawVerb := strings.Fields(input)[0] // case preserved for key matching
 
 	fail := func(msg string) (tea.Model, tea.Cmd) {
 		m.cmdBar.SetError(msg) // stays in stateCommand
@@ -1701,6 +1702,15 @@ func (m *home) executeCommand(input string) (tea.Model, tea.Cmd) {
 		m.cmdBar.Reset()
 		m.clearFilter() // a command-driven view switch starts unfiltered
 		return model, cmd
+	}
+
+	// Any keybinding is invokable as ":<key>" — e.g. :c :p :r :R :F :W :A. Match
+	// the raw token case-sensitively (so :R restart ≠ :r resume) before the
+	// lowercased word commands below.
+	if _, isKey := keys.GlobalKeyStringsMap[rawVerb]; isKey {
+		m.state = stateDefault
+		m.cmdBar.Reset()
+		return m.dispatchSyntheticKey(rawVerb)
 	}
 
 	switch verb {
@@ -1754,7 +1764,55 @@ func (m *home) executeCommand(input string) (tea.Model, tea.Cmd) {
 		m.cmdBar.Reset()
 		return m.showHelpScreen(helpTypeGeneral{}, nil)
 	default:
+		// Readable word aliases for the action keys: :checkout :push :resume ...
+		if ks, ok := actionWordToKey[verb]; ok {
+			m.state = stateDefault
+			m.cmdBar.Reset()
+			return m.dispatchSyntheticKey(ks)
+		}
 		return fail(fmt.Sprintf("unknown command: %s", verb))
+	}
+}
+
+// actionWordToKey maps readable command words to the keybinding they invoke, so
+// ":checkout" works as well as ":c". Word commands handled explicitly above
+// (workspaces/sessions/ws/new/delete/quit/help) are intentionally absent.
+var actionWordToKey = map[string]string{
+	"checkout":        "c",
+	"push":            "p",
+	"resume":          "r",
+	"restart":         "R",
+	"finish":          "F",
+	"attach":          "enter",
+	"open":            "enter",
+	"prompt":          "N",
+	"add":             "A",
+	"addworkspace":    "A",
+	"switch":          "W",
+	"switchworkspace": "W",
+}
+
+// dispatchSyntheticKey re-feeds a keybinding through the normal key handler, so
+// the command bar reuses every existing key action. State is already reset to
+// default by the caller.
+func (m *home) dispatchSyntheticKey(keyStr string) (tea.Model, tea.Cmd) {
+	return m.handleKeyPress(synthKeyMsg(keyStr))
+}
+
+// synthKeyMsg builds the tea.KeyMsg for a keybinding string. Named keys map to
+// their KeyType (so msg.String() round-trips); everything else is sent as runes.
+func synthKeyMsg(keyStr string) tea.KeyMsg {
+	switch keyStr {
+	case "enter":
+		return tea.KeyMsg{Type: tea.KeyEnter}
+	case "tab":
+		return tea.KeyMsg{Type: tea.KeyTab}
+	case "up":
+		return tea.KeyMsg{Type: tea.KeyUp}
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
+	default:
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(keyStr)}
 	}
 }
 
