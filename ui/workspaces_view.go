@@ -110,8 +110,11 @@ func (v *WorkspacesView) SetSize(width, height int) {
 }
 
 func (v *WorkspacesView) String() string {
-	v.table.SetSize(v.width, v.height)
-	// Pad to the full content height (see SessionsView.String) so the layout
-	// fills the screen and overlays center correctly.
-	return lipgloss.Place(v.width, v.height, lipgloss.Left, lipgloss.Top, v.table.String())
+	// Render the table into the box interior (width-2 x height-2); the box pads
+	// to the full content region so the layout fills the screen and overlays
+	// center correctly.
+	// width-3: interior is width-2, less 1 for a right gutter the box pads back.
+	v.table.SetSize(v.width-3, v.height-2)
+	title := fmt.Sprintf("Workspaces[%d]", v.table.Len())
+	return renderContentBox(title, v.table.String(), v.width, v.height)
 }

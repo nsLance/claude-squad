@@ -1,6 +1,6 @@
 package ui
 
-import "github.com/charmbracelet/lipgloss"
+import "fmt"
 
 // SessionsView renders the sessions table full-width (the table-primary root or
 // a workspace-scoped list). It wraps the persistent *List so all navigation and
@@ -31,9 +31,15 @@ func (v *SessionsView) Breadcrumb() string {
 func (v *SessionsView) SetSize(width, height int) { v.width, v.height = width, height }
 
 func (v *SessionsView) String() string {
-	// Pad to the full content height so the bottom menu/error bar sit at the
-	// bottom of the screen and overlays (centered on the rendered view) aren't
-	// clipped against a short background.
-	return lipgloss.Place(v.width, v.height, lipgloss.Left, lipgloss.Top,
-		v.list.RenderTableBody(v.width, v.height))
+	scope := v.scopeLabel
+	if scope == "" {
+		scope = "all"
+	}
+	title := fmt.Sprintf("Sessions(%s)[%d]", scope, v.list.VisibleCount())
+	// Render the table into the box interior (width-2 x height-2); the box pads
+	// to the full content region so overlays center correctly and the bottom
+	// bar/error row sit at the bottom of the screen.
+	// width-3: interior is width-2, less 1 for a right gutter the box pads back.
+	body := v.list.RenderTableBody(v.width-3, v.height-2)
+	return renderContentBox(title, body, v.width, v.height)
 }

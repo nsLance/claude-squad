@@ -167,6 +167,12 @@ func (l *List) visibleRows() (rows []any, selIdx int) {
 	return rows, selIdx
 }
 
+// VisibleCount returns the number of sessions passing the current view filter.
+func (l *List) VisibleCount() int {
+	rows, _ := l.visibleRows()
+	return len(rows)
+}
+
 // RenderTableBody renders just the sessions table (header row + rows) at the
 // given size, honoring the current view filter and selection. No list header —
 // the top banner provides context. Used by SessionsView (Phase D).
