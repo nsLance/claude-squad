@@ -96,18 +96,34 @@ NOTE: The default program is `claude` and we recommend using the latest version.
 
 <br />
 
-#### Menu
-The menu at the bottom of the screen shows available commands: 
+#### Interface (k9s-style)
 
-##### Instance/Session Management
+The UI is a **table-primary, drill-down** interface modeled on [k9s], mapping
+workspaces → namespaces and sessions → pods:
+
+- A **top banner** shows context (version, active workspace as `ns:`, session/workspace counts) with hotkey hints, plus a **breadcrumb** of the current view.
+- The main area is a **columnar table** (sortable, with a `▸` cursor): a workspaces list, or a sessions list (`NAME / WORKSPACE / BRANCH / STATUS / DIFF / AGE`).
+- **Drill down** with `↵` (workspace → its sessions → session detail) and **back out** with `esc`.
+
+[k9s]: https://k9scli.io/
+
+##### Command bar (`:`)
+Press `:` to open the command bar (the primary way to jump around):
+- `:workspaces` (`:ns`) — the workspaces ("namespace") list
+- `:ws <name>` — jump into a workspace's sessions
+- `:sessions` (`:s`, `:all`) — all sessions, unscoped
+- `:new` (`:n`) — create a new session
+- `:quit` (`:q`) — quit
+
+##### Session Management
 - `n` - Create a new session
 - `N` - Create a new session with a prompt
 - `D` - Kill (delete) the selected session
 - `R` - Restart a session whose agent process exited (keeps the worktree)
-- `↑/j`, `↓/k` - Navigate between sessions
+- `↑/j`, `↓/k` - Move the cursor
 
 ##### Actions
-- `↵/o` - Attach to the selected session to reprompt
+- `↵/o` - Drill in / attach to the selected session
 - `ctrl-q` - Detach from session
 - `p` - Commit and push branch to github
 - `c` - Checkout. Commits changes and pauses the session
@@ -118,13 +134,11 @@ The menu at the bottom of the screen shows available commands:
 ##### Workspaces
 - `A` - Add a workspace (existing dir or new — git-init's new dirs automatically)
 - `W` - Switch active workspace (where new sessions land)
-- `V` - Cycle workspace view filter (All → ws1 → ws2 → All)
-- `z` - Fold/unfold the workspace group containing the current selection
 
-##### Navigation
-- `tab` - Switch between preview tab and diff tab
+##### Other
+- `tab` - Switch between preview, diff, and terminal tabs
 - `q` - Quit the application
-- `shift-↓/↑` - scroll in diff view
+- `shift-↓/↑` - scroll in preview/diff/terminal
 
 ##### In-pane chord bindings (work inside any agent CLI running in a cs session)
 Because the bindings live on the dedicated tmux server, they fire before the
