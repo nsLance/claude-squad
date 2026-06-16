@@ -178,6 +178,41 @@ var (
 		},
 	}
 
+	gcApply bool
+	gcForce bool
+	gcCmd   = &cobra.Command{
+		Use:   "gc [worktree-path...]",
+		Short: "Remove orphaned worktrees left behind by killed or crashed sessions",
+		Long: "With no arguments, scans every workspace for cs worktrees that no longer\n" +
+			"back a live session — orphans from a crash, a SIGKILL, or a failed kill —\n" +
+			"and removes them along with their cs-created branches.\n\n" +
+			"With one or more paths, removes exactly those worktrees.\n\n" +
+			"Dry-run by default: it prints what it would remove. Pass --yes to apply.\n" +
+			"Worktrees cs didn't create are refused unless --force is given.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			log.Initialize(false)
+			defer log.Close()
+
+			branchPrefix := config.LoadConfig().BranchPrefix
+
+			state := config.LoadState()
+			storage, err := session.NewStorage(state)
+			if err != nil {
+				return fmt.Errorf("failed to initialize storage: %w", err)
+			}
+			instances, err := storage.LoadInstances()
+			if err != nil {
+				return fmt.Errorf("failed to load instances: %w", err)
+			}
+
+			reg := config.LoadWorkspaceRegistry()
+			if len(args) > 0 {
+				return gcPrune(args, reg, branchPrefix)
+			}
+			return gcReconcile(reg, liveWorktreePaths(instances), branchPrefix)
+		},
+	}
+
 	migrateSocketCmd = &cobra.Command{
 		Use:   "migrate-socket",
 		Short: "Move existing sessions onto claude-squad's dedicated tmux socket",
@@ -287,15 +322,15 @@ var (
 		},
 	}
 
-	finishIntent              string
-	finishWork                string
-	finishFiles               []string
-	finishNoFiles             bool
-	finishVerificationStatus  string
-	finishVerificationReason  string
+	finishIntent               string
+	finishWork                 string
+	finishFiles                []string
+	finishNoFiles              bool
+	finishVerificationStatus   string
+	finishVerificationReason   string
 	finishVerificationEvidence string
-	finishDisposition         string
-	finishInteractive         bool
+	finishDisposition          string
+	finishInteractive          bool
 
 	finishCmd = &cobra.Command{
 		Use:   "finish",
@@ -642,6 +677,178 @@ func migrateInstancesToWorkspaces(reg *config.WorkspaceRegistry) error {
 	return state.SaveInstances(out)
 }
 
+// liveWorktreePaths groups the EvalSymlinks-resolved worktree paths of every
+// live instance by repo path, for feeding ReconcileWorktrees a keep-set so it
+// never touches a worktree that still backs a session.
+func liveWorktreePaths(instances []*session.Instance) map[string]map[string]struct{} {
+	out := make(map[string]map[string]struct{})
+	for _, inst := range instances {
+		wt, err := inst.GetGitWorktree()
+		if err != nil {
+			continue
+		}
+		path := wt.GetWorktreePath()
+		if path == "" {
+			continue
+		}
+		resolved := path
+		if r, rerr := filepath.EvalSymlinks(path); rerr == nil {
+			resolved = r
+		}
+		repo := wt.GetRepoPath()
+		if out[repo] == nil {
+			out[repo] = make(map[string]struct{})
+		}
+		out[repo][resolved] = struct{}{}
+	}
+	return out
+}
+
+// csRoots returns every directory cs uses as a worktree root: the legacy global
+// dir plus each workspace's root. Used to classify whether an explicit prune
+// target is cs-managed.
+func csRoots(reg *config.WorkspaceRegistry) []string {
+	var roots []string
+	if configDir, err := config.GetConfigDir(); err == nil {
+		roots = append(roots, filepath.Join(configDir, "worktrees"))
+	}
+	for _, w := range reg.Workspaces {
+		if root, err := w.WorktreeRoot(); err == nil {
+			roots = append(roots, root)
+		}
+	}
+	return roots
+}
+
+// repoForWorktree finds the git repo that owns the worktree at path: the
+// workspace whose root contains it, or — for a foreign path — whatever repo git
+// itself reports. Returns "" when it can't be determined.
+func repoForWorktree(path string, reg *config.WorkspaceRegistry) string {
+	sep := string(filepath.Separator)
+	resolved := path
+	if r, err := filepath.EvalSymlinks(path); err == nil {
+		resolved = r
+	}
+	for _, w := range reg.Workspaces {
+		root, err := w.WorktreeRoot()
+		if err != nil {
+			continue
+		}
+		rr := root
+		if r, e := filepath.EvalSymlinks(root); e == nil {
+			rr = r
+		}
+		if strings.HasPrefix(resolved+sep, strings.TrimRight(rr, sep)+sep) {
+			return w.RepoPath
+		}
+	}
+	// Foreign path: ask git which repo owns this worktree. --git-common-dir
+	// points at the main repo's .git; its parent is the repo root.
+	if out, err := exec.Command("git", "-C", path, "rev-parse", "--git-common-dir").Output(); err == nil {
+		common := strings.TrimSpace(string(out))
+		if common != "" {
+			if !filepath.IsAbs(common) {
+				common = filepath.Join(path, common)
+			}
+			return filepath.Dir(common)
+		}
+	}
+	return ""
+}
+
+// gcReconcile scans every workspace for orphaned worktrees and (when gcApply)
+// removes them. Dry-run otherwise.
+func gcReconcile(reg *config.WorkspaceRegistry, keepByRepo map[string]map[string]struct{}, branchPrefix string) error {
+	total := 0
+	for _, w := range reg.Workspaces {
+		root, err := w.WorktreeRoot()
+		if err != nil {
+			log.WarningLog.Printf("worktree root for workspace %s: %v", w.ID, err)
+			continue
+		}
+		keep := keepByRepo[w.RepoPath]
+		orphans, err := git.ListOrphanWorktrees(w.RepoPath, root, keep)
+		if err != nil {
+			log.WarningLog.Printf("scan workspace %s worktrees: %v", w.ID, err)
+		}
+		for _, o := range orphans {
+			label := o.Branch
+			if label == "" {
+				label = "(no branch)"
+			}
+			verb := "would remove"
+			if gcApply {
+				verb = "removing"
+			}
+			fmt.Printf("%s  %s  [%s]\n", verb, o.Path, label)
+			total++
+		}
+		if gcApply && len(orphans) > 0 {
+			if err := git.ReconcileWorktrees(w.RepoPath, root, branchPrefix, keep); err != nil {
+				log.WarningLog.Printf("reconcile workspace %s: %v", w.ID, err)
+			}
+		}
+	}
+	switch {
+	case total == 0:
+		fmt.Println("No orphaned worktrees found.")
+	case gcApply:
+		fmt.Printf("Removed %d orphaned worktree(s).\n", total)
+	default:
+		fmt.Printf("%d orphaned worktree(s) would be removed. Re-run with --yes to apply.\n", total)
+	}
+	return nil
+}
+
+// gcPrune removes the explicitly named worktree paths, grouped by owning repo.
+// Foreign worktrees are refused unless gcForce; dry-run unless gcApply.
+func gcPrune(paths []string, reg *config.WorkspaceRegistry, branchPrefix string) error {
+	roots := csRoots(reg)
+	byRepo := make(map[string][]string)
+	for _, p := range paths {
+		abs := p
+		if a, err := filepath.Abs(p); err == nil {
+			abs = a
+		}
+		repo := repoForWorktree(abs, reg)
+		if repo == "" {
+			fmt.Printf("skip (cannot resolve owning repo)  %s\n", p)
+			continue
+		}
+		byRepo[repo] = append(byRepo[repo], abs)
+	}
+
+	var removedTotal, skippedTotal int
+	for repo, ps := range byRepo {
+		removed, skipped, err := git.PruneWorktrees(repo, ps, roots, branchPrefix, gcForce, !gcApply)
+		if err != nil {
+			log.WarningLog.Printf("prune in %s: %v", repo, err)
+		}
+		for _, r := range removed {
+			verb := "would remove"
+			if gcApply {
+				verb = "removed"
+			}
+			fmt.Printf("%s  %s\n", verb, r)
+		}
+		for _, s := range skipped {
+			fmt.Printf("skip (foreign — use --force)  %s\n", s)
+		}
+		removedTotal += len(removed)
+		skippedTotal += len(skipped)
+	}
+
+	if removedTotal > 0 && !gcApply {
+		fmt.Printf("%d worktree(s) would be removed. Re-run with --yes to apply.\n", removedTotal)
+	} else if gcApply {
+		fmt.Printf("Removed %d worktree(s).\n", removedTotal)
+	}
+	if skippedTotal > 0 {
+		fmt.Printf("%d worktree(s) skipped as foreign. Re-run with --force to remove them anyway.\n", skippedTotal)
+	}
+	return nil
+}
+
 func init() {
 	// Publish the version to the config package so non-main packages (the
 	// journal header) can stamp it without importing main.
@@ -665,6 +872,13 @@ func init() {
 	rootCmd.AddCommand(debugCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(resetCmd)
+
+	gcCmd.Flags().BoolVarP(&gcApply, "yes", "y", false,
+		"Actually remove the worktrees (default is a dry-run that only prints what would go)")
+	gcCmd.Flags().BoolVar(&gcForce, "force", false,
+		"When pruning explicit paths, also remove worktrees cs didn't create")
+	rootCmd.AddCommand(gcCmd)
+
 	rootCmd.AddCommand(migrateSocketCmd)
 
 	checkpointCmd.Flags().StringVarP(&checkpointMessage, "message", "m", "",

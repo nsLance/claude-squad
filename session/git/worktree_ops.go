@@ -264,35 +264,24 @@ func CleanupWorktrees() error {
 	return nil
 }
 
-// CleanupWorkspaceWorktrees removes every worktree whose path is under
-// worktreeRoot from the git repo at repoPath, deletes the associated branches,
-// and prunes. This is the per-workspace counterpart to CleanupWorktrees, which
-// only handles the legacy global worktree directory. Returns a combined error
-// if any per-worktree removal failed, but always attempts every one — partial
-// progress beats abort-on-first-error here.
-func CleanupWorkspaceWorktrees(repoPath, worktreeRoot string) error {
-	if repoPath == "" || worktreeRoot == "" {
-		return nil
-	}
-	// If the worktree root doesn't exist, there's nothing to clean.
-	if _, err := os.Stat(worktreeRoot); os.IsNotExist(err) {
-		return nil
-	}
+// worktreeEntry is a single line group from `git worktree list --porcelain`.
+type worktreeEntry struct{ path, branch string }
 
-	listCmd := exec.Command("git", "-C", repoPath, "worktree", "list", "--porcelain")
-	out, err := listCmd.Output()
+// listWorktreeEntries runs `git worktree list --porcelain` in repoPath and
+// parses the registered worktrees (path + branch, branch without the
+// refs/heads/ prefix).
+func listWorktreeEntries(repoPath string) ([]worktreeEntry, error) {
+	out, err := exec.Command("git", "-C", repoPath, "worktree", "list", "--porcelain").Output()
 	if err != nil {
-		return fmt.Errorf("list worktrees in %s: %w", repoPath, err)
+		return nil, fmt.Errorf("list worktrees in %s: %w", repoPath, err)
 	}
-
-	type entry struct{ path, branch string }
-	var entries []entry
-	var cur entry
+	var entries []worktreeEntry
+	var cur worktreeEntry
 	flush := func() {
 		if cur.path != "" {
 			entries = append(entries, cur)
 		}
-		cur = entry{}
+		cur = worktreeEntry{}
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		switch {
@@ -306,50 +295,134 @@ func CleanupWorkspaceWorktrees(repoPath, worktreeRoot string) error {
 		}
 	}
 	flush()
+	return entries, nil
+}
 
-	// Normalize worktreeRoot for the prefix check. macOS resolves $TMPDIR
-	// (and similar) through symlinks before `git worktree list` records the
-	// path, so an unresolved root would fail to match git's canonicalized
-	// entries even when both point at the same directory.
-	rootResolved, err := filepath.EvalSymlinks(worktreeRoot)
-	if err != nil {
-		rootResolved = worktreeRoot
-	}
-	root := strings.TrimRight(rootResolved, string(filepath.Separator)) + string(filepath.Separator)
-
-	var errs []error
-	for _, e := range entries {
-		entryPath := e.path
-		if resolved, rerr := filepath.EvalSymlinks(entryPath); rerr == nil {
-			entryPath = resolved
-		}
-		if !strings.HasPrefix(entryPath+string(filepath.Separator), root) {
+// resolveRoots EvalSymlinks-resolves each non-empty root and slash-terminates
+// it, so HasPrefix checks line up with git's canonicalized porcelain paths
+// (macOS resolves $TMPDIR and similar through symlinks).
+func resolveRoots(roots []string) []string {
+	out := make([]string, 0, len(roots))
+	for _, r := range roots {
+		if r == "" {
 			continue
 		}
-		if _, err := exec.Command("git", "-C", repoPath, "worktree", "remove", "-f", e.path).CombinedOutput(); err != nil {
-			errs = append(errs, fmt.Errorf("remove worktree %s: %w", e.path, err))
+		resolved := r
+		if rr, err := filepath.EvalSymlinks(r); err == nil {
+			resolved = rr
 		}
-		if e.branch != "" {
-			// Branch deletion is best-effort: a missing branch just means git
-			// already cleaned it up alongside the worktree.
-			if out, err := exec.Command("git", "-C", repoPath, "branch", "-D", e.branch).CombinedOutput(); err != nil {
-				if !strings.Contains(string(out), "not found") {
-					log.WarningLog.Printf("delete branch %s in %s: %v", e.branch, repoPath, err)
-				}
+		out = append(out, strings.TrimRight(resolved, string(filepath.Separator))+string(filepath.Separator))
+	}
+	return out
+}
+
+// resolvePath returns the symlink-resolved path, falling back to the input when
+// resolution fails (e.g. the path no longer exists on disk).
+func resolvePath(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	return p
+}
+
+// isCSManagedWorktree reports whether a worktree (path + branch, branch without
+// the refs/heads/ prefix) is one claude-squad created and may safely tear down.
+// True if EITHER the resolved path is under a known cs root OR the branch
+// carries branchPrefix. roots must already be resolved + slash-terminated (see
+// resolveRoots). An empty branchPrefix disables the branch signal so a
+// prefix-less misconfiguration doesn't classify every worktree as cs-managed.
+func isCSManagedWorktree(worktreePath, branch string, roots []string, branchPrefix string) bool {
+	p := resolvePath(worktreePath) + string(filepath.Separator)
+	for _, root := range roots {
+		if strings.HasPrefix(p, root) {
+			return true
+		}
+	}
+	if branchPrefix != "" && branch != "" && strings.HasPrefix(branch, branchPrefix) {
+		return true
+	}
+	return false
+}
+
+// OrphanWorktree is a cs worktree under a root with no backing live session.
+type OrphanWorktree struct {
+	Path   string // the worktree path as git/disk knows it (unresolved)
+	Branch string // associated branch, "" for a dangling directory git forgot
+}
+
+// collectOrphans returns every cs worktree under worktreeRoot in repoPath whose
+// resolved path is not in keep: both git-registered worktrees (the crash case —
+// git's registry survives but the session record didn't) and dangling
+// worktree directories git no longer tracks (a partial removal). keep holds
+// EvalSymlinks-resolved live-session worktree paths.
+func collectOrphans(repoPath, worktreeRoot string, keep map[string]struct{}) ([]OrphanWorktree, error) {
+	entries, listErr := listWorktreeEntries(repoPath)
+
+	root := strings.TrimRight(resolvePath(worktreeRoot), string(filepath.Separator)) + string(filepath.Separator)
+
+	registered := make(map[string]struct{})
+	var orphans []OrphanWorktree
+	for _, e := range entries {
+		entryResolved := resolvePath(e.path)
+		if !strings.HasPrefix(entryResolved+string(filepath.Separator), root) {
+			continue
+		}
+		registered[entryResolved] = struct{}{}
+		if _, ok := keep[entryResolved]; ok {
+			continue
+		}
+		orphans = append(orphans, OrphanWorktree{Path: e.path, Branch: e.branch})
+	}
+
+	// Sweep dangling worktree directories git no longer tracks. Worktree paths
+	// nest by branch namespace (<root>/nakkul/cs-edge_<nanos>), so we walk and
+	// treat any directory containing a .git entry as a worktree dir — never the
+	// intermediate namespace dirs that may still hold a kept worktree.
+	_ = filepath.WalkDir(worktreeRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil || !d.IsDir() || path == worktreeRoot {
+			return nil
+		}
+		if _, statErr := os.Stat(filepath.Join(path, ".git")); statErr != nil {
+			return nil // not a worktree dir; keep descending
+		}
+		resolved := resolvePath(path)
+		if _, ok := keep[resolved]; ok {
+			return filepath.SkipDir
+		}
+		if _, ok := registered[resolved]; ok {
+			return filepath.SkipDir // already handled via the registry above
+		}
+		orphans = append(orphans, OrphanWorktree{Path: path})
+		return filepath.SkipDir
+	})
+
+	return orphans, listErr
+}
+
+// tearDownWorktree force-removes a single worktree and, when branch is
+// non-empty, best-effort deletes that branch. If `git worktree remove` fails
+// (e.g. the dir is dangling and git no longer tracks it), it falls back to
+// removing the directory outright. Returns collected (non-fatal) errors.
+func tearDownWorktree(repoPath, path, branch string) []error {
+	var errs []error
+	if out, err := exec.Command("git", "-C", repoPath, "worktree", "remove", "-f", path).CombinedOutput(); err != nil {
+		if rmErr := os.RemoveAll(path); rmErr != nil {
+			errs = append(errs, fmt.Errorf("remove worktree %s: %s: %w", path, strings.TrimSpace(string(out)), err))
+		}
+	}
+	if branch != "" {
+		// Best-effort: a missing branch just means git already cleaned it up.
+		if out, err := exec.Command("git", "-C", repoPath, "branch", "-D", branch).CombinedOutput(); err != nil {
+			if !strings.Contains(string(out), "not found") {
+				log.WarningLog.Printf("delete branch %s in %s: %v", branch, repoPath, err)
 			}
 		}
 	}
+	return errs
+}
 
-	if _, err := exec.Command("git", "-C", repoPath, "worktree", "prune").CombinedOutput(); err != nil {
-		errs = append(errs, fmt.Errorf("prune worktrees in %s: %w", repoPath, err))
-	}
-
-	// Sweep any leftover directories that git didn't know about (e.g. a worktree
-	// removed manually but whose dir survived).
-	if err := os.RemoveAll(worktreeRoot); err != nil {
-		errs = append(errs, fmt.Errorf("remove worktree root %s: %w", worktreeRoot, err))
-	}
-
+// joinErrs combines best-effort errors under a single prefixed message, or nil.
+func joinErrs(prefix string, errs []error) error {
 	if len(errs) == 0 {
 		return nil
 	}
@@ -357,7 +430,131 @@ func CleanupWorkspaceWorktrees(repoPath, worktreeRoot string) error {
 	for i, e := range errs {
 		msgs[i] = e.Error()
 	}
-	return fmt.Errorf("workspace worktree cleanup: %s", strings.Join(msgs, "; "))
+	return fmt.Errorf("%s: %s", prefix, strings.Join(msgs, "; "))
+}
+
+// reconcile is the shared core behind CleanupWorkspaceWorktrees and
+// ReconcileWorktrees. It removes every cs worktree under worktreeRoot except
+// those in keep, prunes the registry, and (when nukeRoot) removes the whole
+// root. A branch is deleted only when forceBranchDelete is set or it carries
+// branchPrefix — otherwise it's left intact (it may be a pre-existing branch a
+// session merely borrowed). Always attempts every orphan; partial progress
+// beats abort-on-first-error.
+func reconcile(repoPath, worktreeRoot, branchPrefix string, keep map[string]struct{}, nukeRoot, forceBranchDelete bool) error {
+	if repoPath == "" || worktreeRoot == "" {
+		return nil
+	}
+	if _, err := os.Stat(worktreeRoot); os.IsNotExist(err) {
+		return nil
+	}
+
+	orphans, listErr := collectOrphans(repoPath, worktreeRoot, keep)
+	var errs []error
+	if listErr != nil {
+		errs = append(errs, listErr)
+	}
+	for _, o := range orphans {
+		branch := ""
+		if o.Branch != "" && (forceBranchDelete || (branchPrefix != "" && strings.HasPrefix(o.Branch, branchPrefix))) {
+			branch = o.Branch
+		}
+		errs = append(errs, tearDownWorktree(repoPath, o.Path, branch)...)
+	}
+
+	if _, err := exec.Command("git", "-C", repoPath, "worktree", "prune").CombinedOutput(); err != nil {
+		errs = append(errs, fmt.Errorf("prune worktrees in %s: %w", repoPath, err))
+	}
+
+	if nukeRoot {
+		if err := os.RemoveAll(worktreeRoot); err != nil {
+			errs = append(errs, fmt.Errorf("remove worktree root %s: %w", worktreeRoot, err))
+		}
+	}
+
+	return joinErrs("reconcile worktrees", errs)
+}
+
+// CleanupWorkspaceWorktrees removes every worktree under worktreeRoot from the
+// git repo at repoPath, deletes the associated branches, prunes, and removes the
+// whole root. Used by `cs reset`, so it is intentionally aggressive (no keep-set,
+// unconditional branch deletion). The per-workspace counterpart to
+// CleanupWorktrees, which only handles the legacy global worktree directory.
+func CleanupWorkspaceWorktrees(repoPath, worktreeRoot string) error {
+	return reconcile(repoPath, worktreeRoot, "", nil, true /*nukeRoot*/, true /*forceBranchDelete*/)
+}
+
+// ListOrphanWorktrees returns the cs worktrees under worktreeRoot in repoPath
+// not backed by a live session (keep holds resolved live worktree paths). Used
+// by `cs gc` to preview what a reconcile would remove. Returns nil when the root
+// is absent.
+func ListOrphanWorktrees(repoPath, worktreeRoot string, keep map[string]struct{}) ([]OrphanWorktree, error) {
+	if repoPath == "" || worktreeRoot == "" {
+		return nil, nil
+	}
+	if _, err := os.Stat(worktreeRoot); os.IsNotExist(err) {
+		return nil, nil
+	}
+	return collectOrphans(repoPath, worktreeRoot, keep)
+}
+
+// ReconcileWorktrees is the crash-recovery net: it removes cs orphan worktrees
+// (and their cs-created branches) under worktreeRoot in repoPath, sparing any
+// whose resolved path is in keep — the live sessions. Safe to run on every
+// startup; idempotent.
+func ReconcileWorktrees(repoPath, worktreeRoot, branchPrefix string, keep map[string]struct{}) error {
+	return reconcile(repoPath, worktreeRoot, branchPrefix, keep, false /*nukeRoot*/, false /*forceBranchDelete*/)
+}
+
+// PruneWorktrees removes the explicitly named worktree paths from the repo at
+// repoPath. Each path is classified against the cs roots (and branchPrefix); a
+// path that looks foreign — a user-created worktree cs didn't make — is REFUSED
+// and returned in skipped unless force is true. A branch is deleted only when it
+// carries branchPrefix, so a borrowed pre-existing branch survives. When dryRun
+// is set nothing is touched: removed/skipped report what would happen.
+func PruneWorktrees(repoPath string, worktreePaths []string, roots []string, branchPrefix string, force, dryRun bool) (removed, skipped []string, err error) {
+	if repoPath == "" || len(worktreePaths) == 0 {
+		return nil, nil, nil
+	}
+	resolvedRoots := resolveRoots(roots)
+
+	entries, listErr := listWorktreeEntries(repoPath)
+	branchByPath := make(map[string]string, len(entries))
+	for _, e := range entries {
+		branchByPath[resolvePath(e.path)] = e.branch
+	}
+
+	var errs []error
+	if listErr != nil {
+		errs = append(errs, listErr)
+	}
+	didRemove := false
+	for _, wp := range worktreePaths {
+		resolved := resolvePath(wp)
+		branch := branchByPath[resolved]
+		if !force && !isCSManagedWorktree(resolved, branch, resolvedRoots, branchPrefix) {
+			skipped = append(skipped, wp)
+			continue
+		}
+		removed = append(removed, wp)
+		if dryRun {
+			continue
+		}
+		// Only delete the branch when it's clearly cs-created; otherwise leave it.
+		delBranch := ""
+		if branch != "" && branchPrefix != "" && strings.HasPrefix(branch, branchPrefix) {
+			delBranch = branch
+		}
+		errs = append(errs, tearDownWorktree(repoPath, wp, delBranch)...)
+		didRemove = true
+	}
+
+	if didRemove {
+		if _, perr := exec.Command("git", "-C", repoPath, "worktree", "prune").CombinedOutput(); perr != nil {
+			errs = append(errs, fmt.Errorf("prune worktrees in %s: %w", repoPath, perr))
+		}
+	}
+
+	return removed, skipped, joinErrs("prune worktrees", errs)
 }
 
 // RemoveOrphanWorktree force-removes a single worktree at worktreePath from

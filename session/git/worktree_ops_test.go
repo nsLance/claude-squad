@@ -249,3 +249,244 @@ func mustRunGit(t *testing.T, dir string, args ...string) string {
 	}
 	return string(output)
 }
+
+// --- worktree reconciler / prune tests ---
+
+func addWorktree(t *testing.T, repo, path, branch string) {
+	t.Helper()
+	out, err := exec.Command("git", "-C", repo, "worktree", "add", "-b", branch, path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("worktree add %s (%s): %v: %s", path, branch, err, out)
+	}
+}
+
+func branchExists(t *testing.T, repo, branch string) bool {
+	t.Helper()
+	err := exec.Command("git", "-C", repo, "show-ref", "--verify", "--quiet", "refs/heads/"+branch).Run()
+	return err == nil
+}
+
+func gone(path string) bool {
+	_, err := os.Stat(path)
+	return os.IsNotExist(err)
+}
+
+func mkRoot(t *testing.T) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "wsroot")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func TestIsCSManagedWorktree(t *testing.T) {
+	root := t.TempDir()
+	roots := resolveRoots([]string{root})
+	underRoot := filepath.Join(root, "nakkul", "a_123")
+	if err := os.MkdirAll(underRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outsideDir := t.TempDir()
+	outside := filepath.Join(outsideDir, "b_456")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name         string
+		path, branch string
+		prefix       string
+		want         bool
+	}{
+		{"under-root prefixed", underRoot, "nakkul/a", "nakkul/", true},
+		{"under-root non-prefixed", underRoot, "feature-x", "nakkul/", true},
+		{"outside prefixed", outside, "nakkul/b", "nakkul/", true},
+		{"outside non-prefixed", outside, "feature-y", "nakkul/", false},
+		{"empty prefix disables branch signal", outside, "nakkul/b", "", false},
+	}
+	for _, c := range cases {
+		if got := isCSManagedWorktree(c.path, c.branch, roots, c.prefix); got != c.want {
+			t.Errorf("%s: isCSManagedWorktree = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestReconcileWorktrees_RemovesOrphanKeepsLive(t *testing.T) {
+	repo := initTestRepo(t)
+	root := mkRoot(t)
+	a := filepath.Join(root, "nakkul", "a_1")
+	b := filepath.Join(root, "nakkul", "b_2")
+	c := filepath.Join(root, "nakkul", "c_3")
+	addWorktree(t, repo, a, "nakkul/a")
+	addWorktree(t, repo, b, "nakkul/b")
+	addWorktree(t, repo, c, "nakkul/c")
+
+	keep := map[string]struct{}{resolvePath(c): {}}
+	if err := ReconcileWorktrees(repo, root, "nakkul/", keep); err != nil {
+		t.Fatalf("ReconcileWorktrees: %v", err)
+	}
+
+	if !gone(a) || !gone(b) {
+		t.Errorf("orphan worktrees should be removed: a gone=%v b gone=%v", gone(a), gone(b))
+	}
+	if gone(c) {
+		t.Errorf("live worktree c should survive")
+	}
+	if gone(root) {
+		t.Errorf("root must NOT be nuked by reconcile (only by reset)")
+	}
+	if branchExists(t, repo, "nakkul/a") || branchExists(t, repo, "nakkul/b") {
+		t.Errorf("orphan branches should be deleted")
+	}
+	if !branchExists(t, repo, "nakkul/c") {
+		t.Errorf("live branch nakkul/c should survive")
+	}
+
+	// Idempotent: a second run is a clean noop.
+	if err := ReconcileWorktrees(repo, root, "nakkul/", keep); err != nil {
+		t.Errorf("second reconcile should be noop, got: %v", err)
+	}
+}
+
+func TestReconcileWorktrees_ForeignRootUntouched(t *testing.T) {
+	repo := initTestRepo(t)
+	root := mkRoot(t)
+	under := filepath.Join(root, "nakkul", "a_1")
+	outside := filepath.Join(t.TempDir(), "outside")
+	addWorktree(t, repo, under, "nakkul/a")
+	addWorktree(t, repo, outside, "nakkul/out")
+
+	if err := ReconcileWorktrees(repo, root, "nakkul/", nil); err != nil {
+		t.Fatalf("ReconcileWorktrees: %v", err)
+	}
+	if !gone(under) {
+		t.Errorf("worktree under root should be removed")
+	}
+	if gone(outside) {
+		t.Errorf("worktree outside root must never be touched")
+	}
+	if !branchExists(t, repo, "nakkul/out") {
+		t.Errorf("outside branch should survive")
+	}
+}
+
+func TestReconcileWorktrees_PreservesNonPrefixBranch(t *testing.T) {
+	repo := initTestRepo(t)
+	root := mkRoot(t)
+	wt := filepath.Join(root, "borrowed_1")
+	addWorktree(t, repo, wt, "feature-x") // under root (cs-managed) but not a cs branch
+
+	if err := ReconcileWorktrees(repo, root, "nakkul/", nil); err != nil {
+		t.Fatalf("ReconcileWorktrees: %v", err)
+	}
+	if !gone(wt) {
+		t.Errorf("worktree under root should be removed")
+	}
+	if !branchExists(t, repo, "feature-x") {
+		t.Errorf("non-cs branch feature-x must survive (only the worktree goes)")
+	}
+}
+
+func TestReconcileWorktrees_DanglingDirSwept(t *testing.T) {
+	repo := initTestRepo(t)
+	root := mkRoot(t)
+	live := filepath.Join(root, "nakkul", "live_1")
+	addWorktree(t, repo, live, "nakkul/live")
+
+	// A dangling worktree dir git no longer tracks: a directory carrying a .git
+	// gitlink but with no registry entry.
+	dangling := filepath.Join(root, "nakkul", "dangling_9")
+	if err := os.MkdirAll(dangling, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dangling, ".git"), []byte("gitdir: /nonexistent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	keep := map[string]struct{}{resolvePath(live): {}}
+	if err := ReconcileWorktrees(repo, root, "nakkul/", keep); err != nil {
+		t.Fatalf("ReconcileWorktrees: %v", err)
+	}
+	if !gone(dangling) {
+		t.Errorf("dangling dir should be swept")
+	}
+	if gone(live) {
+		t.Errorf("live worktree should survive the sweep")
+	}
+}
+
+func TestPruneWorktrees_SkipsForeignUnlessForced(t *testing.T) {
+	repo := initTestRepo(t)
+	root := mkRoot(t)
+	csWt := filepath.Join(root, "nakkul", "cs_1") // under root => cs-managed
+	foreign := filepath.Join(t.TempDir(), "foreign")
+	addWorktree(t, repo, csWt, "nakkul/cs")
+	addWorktree(t, repo, foreign, "feature-z")
+	roots := []string{root}
+
+	removed, skipped, err := PruneWorktrees(repo, []string{csWt, foreign}, roots, "nakkul/", false /*force*/, false /*dryRun*/)
+	if err != nil {
+		t.Fatalf("PruneWorktrees: %v", err)
+	}
+	if !gone(csWt) {
+		t.Errorf("cs-managed worktree should be pruned")
+	}
+	if gone(foreign) {
+		t.Errorf("foreign worktree must be refused without --force")
+	}
+	if len(removed) != 1 || removed[0] != csWt {
+		t.Errorf("removed = %v, want [%s]", removed, csWt)
+	}
+	if len(skipped) != 1 || skipped[0] != foreign {
+		t.Errorf("skipped = %v, want [%s]", skipped, foreign)
+	}
+
+	// With --force the foreign worktree goes too.
+	if _, _, err := PruneWorktrees(repo, []string{foreign}, roots, "nakkul/", true /*force*/, false); err != nil {
+		t.Fatalf("PruneWorktrees force: %v", err)
+	}
+	if !gone(foreign) {
+		t.Errorf("foreign worktree should be removed with --force")
+	}
+}
+
+func TestPruneWorktrees_DryRunTouchesNothing(t *testing.T) {
+	repo := initTestRepo(t)
+	root := mkRoot(t)
+	csWt := filepath.Join(root, "nakkul", "cs_1")
+	addWorktree(t, repo, csWt, "nakkul/cs")
+
+	removed, _, err := PruneWorktrees(repo, []string{csWt}, []string{root}, "nakkul/", false, true /*dryRun*/)
+	if err != nil {
+		t.Fatalf("PruneWorktrees dry-run: %v", err)
+	}
+	if len(removed) != 1 {
+		t.Errorf("dry-run should report 1 removable, got %v", removed)
+	}
+	if gone(csWt) {
+		t.Errorf("dry-run must not actually remove anything")
+	}
+}
+
+func TestPruneWorktrees_DeletesPrefixedBranchOnly(t *testing.T) {
+	repo := initTestRepo(t)
+	root := mkRoot(t)
+	prefixed := filepath.Join(root, "nakkul", "p_1")
+	borrowed := filepath.Join(root, "borrowed_1")
+	addWorktree(t, repo, prefixed, "nakkul/p")
+	addWorktree(t, repo, borrowed, "feature-b") // under root, cs-managed by path, branch not ours
+
+	if _, _, err := PruneWorktrees(repo, []string{prefixed, borrowed}, []string{root}, "nakkul/", false, false); err != nil {
+		t.Fatalf("PruneWorktrees: %v", err)
+	}
+	if !gone(prefixed) || !gone(borrowed) {
+		t.Errorf("both worktree dirs should be removed")
+	}
+	if branchExists(t, repo, "nakkul/p") {
+		t.Errorf("cs-prefixed branch should be deleted")
+	}
+	if !branchExists(t, repo, "feature-b") {
+		t.Errorf("non-cs branch feature-b must survive")
+	}
+}

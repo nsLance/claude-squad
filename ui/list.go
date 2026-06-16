@@ -264,16 +264,25 @@ func (l *List) Down() {
 }
 
 // Kill selects the next item in the list.
-func (l *List) Kill() {
+// KillSelected tears down the selected instance (tmux session + git worktree)
+// but leaves the row in the list. It returns the teardown error so callers can
+// decide whether to drop the row: a failed worktree removal should stay visible
+// and recoverable rather than silently vanish into an orphan. Use RemoveSelected
+// once the instance is confirmed dead.
+func (l *List) KillSelected() error {
+	if len(l.items) == 0 {
+		return nil
+	}
+	return l.items[l.selectedIdx].Kill()
+}
+
+// RemoveSelected unregisters the selected instance's repo and splices it out of
+// the list. Call only after the instance has been torn down (KillSelected).
+func (l *List) RemoveSelected() {
 	if len(l.items) == 0 {
 		return
 	}
 	targetInstance := l.items[l.selectedIdx]
-
-	// Kill the tmux session
-	if err := targetInstance.Kill(); err != nil {
-		log.ErrorLog.Printf("could not kill instance: %v", err)
-	}
 
 	// Unregister the reponame.
 	repoName, err := targetInstance.RepoName()
@@ -297,6 +306,18 @@ func (l *List) Kill() {
 		l.selectedIdx = 0
 	}
 	l.ensureSelectionVisible()
+}
+
+// Kill tears down the selected instance and removes it from the list,
+// best-effort: a teardown error is logged but the row is dropped regardless.
+// Used by the unstarted/failed-create cleanup paths where the instance was never
+// persisted, so there's nothing to recover. The interactive "kill this session"
+// path uses KillSelected + RemoveSelected so a failed removal stays recoverable.
+func (l *List) Kill() {
+	if err := l.KillSelected(); err != nil {
+		log.ErrorLog.Printf("could not kill instance: %v", err)
+	}
+	l.RemoveSelected()
 }
 
 func (l *List) Attach() (chan struct{}, error) {

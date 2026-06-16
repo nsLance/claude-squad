@@ -292,6 +292,51 @@ func (m *home) labelForFilter(id string) string {
 	return "(unknown workspace)"
 }
 
+// sweepOrphanWorktrees removes worktrees left behind by a previous run that
+// crashed or was killed before its cleanup could run. Best-effort and
+// non-fatal — a failure here must never block startup. Scoped to workspaceID
+// when set so a focused launch only touches its own workspace. The live
+// instances form the keep-set, so a worktree backing a session is never removed.
+func sweepOrphanWorktrees(instances []*session.Instance, workspaceID string) {
+	branchPrefix := config.LoadConfig().BranchPrefix
+
+	keep := make(map[string]map[string]struct{})
+	for _, inst := range instances {
+		wt, err := inst.GetGitWorktree()
+		if err != nil {
+			continue
+		}
+		path := wt.GetWorktreePath()
+		if path == "" {
+			continue
+		}
+		resolved := path
+		if r, rerr := filepath.EvalSymlinks(path); rerr == nil {
+			resolved = r
+		}
+		repo := wt.GetRepoPath()
+		if keep[repo] == nil {
+			keep[repo] = make(map[string]struct{})
+		}
+		keep[repo][resolved] = struct{}{}
+	}
+
+	reg := config.LoadWorkspaceRegistry()
+	for _, w := range reg.Workspaces {
+		if workspaceID != "" && w.ID != workspaceID {
+			continue
+		}
+		root, err := w.WorktreeRoot()
+		if err != nil {
+			log.WarningLog.Printf("startup reconcile: worktree root for workspace %s: %v", w.ID, err)
+			continue
+		}
+		if err := git.ReconcileWorktrees(w.RepoPath, root, branchPrefix, keep[w.RepoPath]); err != nil {
+			log.WarningLog.Printf("startup reconcile for workspace %s: %v", w.ID, err)
+		}
+	}
+}
+
 func newHome(ctx context.Context, program string, autoYes bool, workspaceID string) *home {
 	// Load application config
 	appConfig := config.LoadConfig()
@@ -339,6 +384,11 @@ func newHome(ctx context.Context, program string, autoYes bool, workspaceID stri
 			instance.AutoYes = true
 		}
 	}
+
+	// Sweep worktrees a previous run leaked by crashing or being killed before
+	// cleanup ran. Best-effort: the loaded instances are the keep-set, so live
+	// sessions are never touched.
+	sweepOrphanWorktrees(instances, workspaceID)
 
 	// Build the navigation views (persistent; the stack holds pointers to them).
 	h.workspacesView = ui.NewWorkspacesView()
@@ -1813,10 +1863,19 @@ func (m *home) confirmKillSession() (tea.Model, tea.Cmd) {
 			return fmt.Errorf("instance %s is currently checked out", selected.Title)
 		}
 		m.tabbedWindow.CleanupTerminalForInstance(selected.Title)
+		// Tear down the worktree + tmux FIRST. Only once that succeeds do we drop
+		// the session from storage and the list. The old order deleted storage
+		// first, so a failed worktree removal left an orphan with no record to
+		// retry from — and the error was swallowed, so the row vanished anyway.
+		// Now a failed teardown surfaces and the row stays put; `cs gc` / the
+		// startup sweep are the backstop for whatever did leak.
+		if err := m.list.KillSelected(); err != nil {
+			return err
+		}
 		if err := m.storage.DeleteInstance(selected.Title); err != nil {
 			return err
 		}
-		m.list.Kill()
+		m.list.RemoveSelected()
 		return instanceChangedMsg{}
 	}
 	return m, m.confirmAction(fmt.Sprintf("[!] Kill session '%s'?", selected.Title), killAction)
