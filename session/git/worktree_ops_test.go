@@ -153,6 +153,31 @@ func TestCleanupWorkspaceWorktrees_MissingRootIsNoop(t *testing.T) {
 // TestRemoveOrphanWorktree mirrors the overlay-cleanup path: confirm-yes runs
 // this against a single worktree path and expects it to vanish along with the
 // branch. This is the surgical-single-target counterpart to the bulk cleanup.
+// TestCleanup_OrphanedDirNotAWorktree covers a session whose worktree directory
+// exists on disk but git has no record of it (the admin entry never registered
+// or was pruned). `git worktree remove` fails with "is not a working tree";
+// Cleanup must fall back to removing the directory so the session can be deleted
+// rather than wedging the list forever.
+func TestCleanup_OrphanedDirNotAWorktree(t *testing.T) {
+	repo := initTestRepo(t)
+	wt := filepath.Join(t.TempDir(), "orphan-not-a-worktree")
+	if err := os.MkdirAll(filepath.Join(wt, ".cs"), 0755); err != nil {
+		t.Fatalf("mkdir orphan: %v", err)
+	}
+
+	g := &GitWorktree{
+		repoPath:     repo,
+		worktreePath: wt,
+		branchName:   "nakkul/orphan-x", // never created; branch -D is a no-op
+	}
+	if err := g.Cleanup(); err != nil {
+		t.Fatalf("Cleanup should succeed for an orphaned dir, got: %v", err)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Errorf("orphaned dir should be removed: stat err=%v", err)
+	}
+}
+
 func TestRemoveOrphanWorktree(t *testing.T) {
 	repo := initTestRepo(t)
 	wt := filepath.Join(t.TempDir(), "orphan")

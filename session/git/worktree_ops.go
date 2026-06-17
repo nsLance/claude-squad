@@ -140,7 +140,18 @@ func (g *GitWorktree) Cleanup() error {
 	if _, err := os.Stat(g.worktreePath); err == nil {
 		// Remove the worktree using git command
 		if _, err := g.runGitCommand(g.repoPath, "worktree", "remove", "-f", g.worktreePath); err != nil {
-			errs = append(errs, err)
+			// The directory exists but git has no worktree record for it (admin
+			// entry never registered, or already pruned by gc) — git reports
+			// "is not a working tree". Removing the stray directory directly lets
+			// teardown finish instead of wedging the session forever; the trailing
+			// Prune() drops any dangling git metadata.
+			if strings.Contains(err.Error(), "is not a working tree") {
+				if rmErr := os.RemoveAll(g.worktreePath); rmErr != nil {
+					errs = append(errs, fmt.Errorf("failed to remove orphaned worktree dir %s: %w", g.worktreePath, rmErr))
+				}
+			} else {
+				errs = append(errs, err)
+			}
 		}
 	} else if !os.IsNotExist(err) {
 		// Only append error if it's not a "not exists" error
