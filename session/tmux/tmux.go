@@ -566,7 +566,13 @@ func (t *TmuxSession) Close() error {
 
 	cmd := Command("kill-session", "-t", t.sanitizedName)
 	if err := t.cmdExec.Run(cmd); err != nil {
-		errs = append(errs, fmt.Errorf("error killing tmux session: %w", err))
+		// An agent that exited on its own (e.g. crashed on launch) leaves no tmux
+		// session to kill, so kill-session fails with "can't find session". That's
+		// benign — only treat it as an error if the session is genuinely still
+		// there, otherwise teardown (and thus deleting the row) gets blocked.
+		if t.DoesSessionExist() {
+			errs = append(errs, fmt.Errorf("error killing tmux session: %w", err))
+		}
 	}
 
 	if len(errs) == 0 {

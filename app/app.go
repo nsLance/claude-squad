@@ -1927,16 +1927,22 @@ func (m *home) confirmKillSession() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	killAction := func() tea.Msg {
-		worktree, err := selected.GetGitWorktree()
-		if err != nil {
-			return err
-		}
-		checkedOut, err := worktree.IsBranchCheckedOut()
-		if err != nil {
-			return err
-		}
-		if checkedOut {
-			return fmt.Errorf("instance %s is currently checked out", selected.Title)
+		// A session that never finished starting (e.g. the agent exited on launch,
+		// or a restore failed) has no live worktree/branch to validate — its
+		// GetGitWorktree() errors. Skip the checked-out guard for it so it can
+		// still be deleted instead of being stuck in the list forever.
+		if selected.Started() {
+			worktree, err := selected.GetGitWorktree()
+			if err != nil {
+				return err
+			}
+			checkedOut, err := worktree.IsBranchCheckedOut()
+			if err != nil {
+				return err
+			}
+			if checkedOut {
+				return fmt.Errorf("instance %s is currently checked out", selected.Title)
+			}
 		}
 		m.tabbedWindow.CleanupTerminalForInstance(selected.Title)
 		// Tear down the worktree + tmux FIRST. Only once that succeeds do we drop

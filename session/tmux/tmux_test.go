@@ -116,6 +116,45 @@ func TestStartTmuxSession(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestClose(t *testing.T) {
+	t.Run("already-gone session is not an error", func(t *testing.T) {
+		// Simulates an agent that exited on its own: kill-session fails because
+		// the session is already gone, and has-session confirms it's absent.
+		// Close must succeed so the caller can finish tearing the session down.
+		exe := cmd_test.MockCmdExec{
+			RunFunc: func(c *exec.Cmd) error {
+				s := cmd2.ToString(c)
+				if strings.Contains(s, "kill-session") {
+					return fmt.Errorf("can't find session")
+				}
+				if strings.Contains(s, "has-session") {
+					return fmt.Errorf("can't find session") // gone
+				}
+				return nil
+			},
+		}
+		session := newTmuxSession("dead", "claude", "", NewMockPtyFactory(t), exe)
+		require.NoError(t, session.Close())
+	})
+
+	t.Run("kill failure on a live session still errors", func(t *testing.T) {
+		exe := cmd_test.MockCmdExec{
+			RunFunc: func(c *exec.Cmd) error {
+				s := cmd2.ToString(c)
+				if strings.Contains(s, "kill-session") {
+					return fmt.Errorf("boom")
+				}
+				if strings.Contains(s, "has-session") {
+					return nil // still alive → genuine failure
+				}
+				return nil
+			},
+		}
+		session := newTmuxSession("alive", "claude", "", NewMockPtyFactory(t), exe)
+		require.Error(t, session.Close())
+	})
+}
+
 func TestGracefulQuit(t *testing.T) {
 	// Speed up the polling/key-spacing for the test.
 	origSend, origPoll := keySendInterval, quitPollInterval
