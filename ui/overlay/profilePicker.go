@@ -70,6 +70,17 @@ func (pp *ProfilePicker) HasMultiple() bool {
 	return len(pp.profiles) > 1
 }
 
+// SetSelectedByProgram moves the cursor to the profile whose Program matches.
+// No-op if none match.
+func (pp *ProfilePicker) SetSelectedByProgram(program string) {
+	for i := range pp.profiles {
+		if pp.profiles[i].Program == program {
+			pp.cursor = i
+			return
+		}
+	}
+}
+
 var (
 	ppLabelStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("62")).

@@ -47,6 +47,10 @@ const (
 	// its continue command in the same worktree, first asking a running agent to
 	// quit gracefully. Works in any non-loading state.
 	KeyRecycle
+
+	// KeySetAgent opens an overlay to set the in-context workspace's default
+	// agent (the program new sessions default to).
+	KeySetAgent
 )
 
 // GlobalKeyStringsMap is a global, immutable map string to keybinding.
@@ -73,6 +77,7 @@ var GlobalKeyStringsMap = map[string]KeyName{
 	"A":          KeyAddWorkspace,
 	"F":          KeyFinish,
 	"X":          KeyRecycle,
+	"G":          KeySetAgent,
 }
 
 // GlobalkeyBindings is a global, immutable map of KeyName tot keybinding.
@@ -154,6 +159,11 @@ var GlobalkeyBindings = map[KeyName]key.Binding{
 	KeyRecycle: key.NewBinding(
 		key.WithKeys("X"),
 		key.WithHelp("X", "rebuild"),
+	),
+
+	KeySetAgent: key.NewBinding(
+		key.WithKeys("G"),
+		key.WithHelp("G", "set agent"),
 	),
 
 	// -- Special keybindings --

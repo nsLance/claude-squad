@@ -9,6 +9,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -158,6 +159,80 @@ func (c *Config) GetProfiles() []Profile {
 		}
 	}
 	return profiles
+}
+
+// MergedAgentProfiles builds the deduped agent list offered by the interactive
+// pickers: the built-in known agents (claude, codex, ...) merged with the user's
+// global profiles and the in-context workspace's profiles. Dedup is by Program
+// (first occurrence wins), so a custom "/opt/homebrew/bin/claude" and the
+// built-in "claude" are kept as distinct choices. When defaultProgram is
+// non-empty it is placed first so a picker's default cursor highlights it.
+//
+// Precedence (earlier wins on display name + ordering):
+//  1. defaultProgram
+//  2. workspace profiles (ws.Profiles)
+//  3. global profiles (cfg.GetProfiles())
+//  4. built-in agents (sorted for stable order)
+//
+// Either cfg or ws may be nil — a fresh user with no config still gets the
+// built-in agents.
+func MergedAgentProfiles(cfg *Config, ws *Workspace, defaultProgram string) []Profile {
+	var out []Profile
+	seen := map[string]bool{}
+	add := func(name, program string) {
+		if program == "" || seen[program] {
+			return
+		}
+		if name == "" {
+			name = program
+		}
+		seen[program] = true
+		out = append(out, Profile{Name: name, Program: program})
+	}
+
+	if defaultProgram != "" {
+		add(nameForProgram(cfg, ws, defaultProgram), defaultProgram)
+	}
+	if ws != nil {
+		for _, p := range ws.Profiles {
+			add(p.Name, p.Program)
+		}
+	}
+	if cfg != nil {
+		for _, p := range cfg.GetProfiles() {
+			add(p.Name, p.Program)
+		}
+	}
+	builtins := make([]string, 0, len(DefaultAgentCommands()))
+	for name := range DefaultAgentCommands() {
+		builtins = append(builtins, name)
+	}
+	sort.Strings(builtins)
+	for _, name := range builtins {
+		add(name, name)
+	}
+	return out
+}
+
+// nameForProgram returns a friendly display name for a program command by
+// matching it against workspace then global profiles; falls back to the program
+// itself when nothing matches.
+func nameForProgram(cfg *Config, ws *Workspace, program string) string {
+	if ws != nil {
+		for _, p := range ws.Profiles {
+			if p.Program == program {
+				return p.Name
+			}
+		}
+	}
+	if cfg != nil {
+		for _, p := range cfg.GetProfiles() {
+			if p.Program == program {
+				return p.Name
+			}
+		}
+	}
+	return program
 }
 
 // DefaultConfig returns the default configuration

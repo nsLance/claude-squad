@@ -67,6 +67,7 @@ var defaultMenuOptions = []keys.KeyName{
 var workspacesMenuOptions = []keys.KeyName{
 	keys.KeyNew, keys.KeyKill,
 	keys.KeyEnter,
+	keys.KeySetAgent,
 	keys.KeyHelp, keys.KeyQuit,
 }
 var newInstanceMenuOptions = []keys.KeyName{keys.KeySubmitName}
@@ -78,31 +79,32 @@ var promptMenuOptions = []keys.KeyName{keys.KeySubmitName}
 type menuGroup int
 
 const (
-	menuGroupInstance menuGroup = iota // n / D
-	menuGroupAction                    // enter / submit / resume / checkout / shift-arrow
-	menuGroupWorkspace                 // A / W / V / z
-	menuGroupSystem                    // tab / ? / q
+	menuGroupInstance  menuGroup = iota // n / D
+	menuGroupAction                     // enter / submit / resume / checkout / shift-arrow
+	menuGroupWorkspace                  // A / W / V / z
+	menuGroupSystem                     // tab / ? / q
 )
 
 // keyMenuGroup is the canonical group for each KeyName. New keys must be added
 // here for them to render with the correct separator placement.
 var keyMenuGroup = map[keys.KeyName]menuGroup{
-	keys.KeyNew:               menuGroupInstance,
-	keys.KeyKill:               menuGroupInstance,
-	keys.KeyEnter:              menuGroupAction,
-	keys.KeySubmit:             menuGroupAction,
-	keys.KeyResume:             menuGroupAction,
-	keys.KeyRestart:            menuGroupAction,
-	keys.KeyRecycle:            menuGroupAction,
-	keys.KeyCheckout:           menuGroupAction,
-	keys.KeyFinish:             menuGroupAction,
-	keys.KeyShiftUp:            menuGroupAction,
-	keys.KeyShiftDown:          menuGroupAction,
-	keys.KeyAddWorkspace:       menuGroupWorkspace,
-	keys.KeyTab:                menuGroupSystem,
-	keys.KeyHelp:               menuGroupSystem,
-	keys.KeyQuit:               menuGroupSystem,
-	keys.KeySubmitName:         menuGroupAction,
+	keys.KeyNew:          menuGroupInstance,
+	keys.KeyKill:         menuGroupInstance,
+	keys.KeyEnter:        menuGroupAction,
+	keys.KeySubmit:       menuGroupAction,
+	keys.KeyResume:       menuGroupAction,
+	keys.KeyRestart:      menuGroupAction,
+	keys.KeyRecycle:      menuGroupAction,
+	keys.KeyCheckout:     menuGroupAction,
+	keys.KeyFinish:       menuGroupAction,
+	keys.KeyShiftUp:      menuGroupAction,
+	keys.KeyShiftDown:    menuGroupAction,
+	keys.KeyAddWorkspace: menuGroupWorkspace,
+	keys.KeySetAgent:     menuGroupWorkspace,
+	keys.KeyTab:          menuGroupSystem,
+	keys.KeyHelp:         menuGroupSystem,
+	keys.KeyQuit:         menuGroupSystem,
+	keys.KeySubmitName:   menuGroupAction,
 }
 
 // MenuEntry is a single key/description pair plus whether it's a "primary"
@@ -238,7 +240,7 @@ func (m *Menu) addInstanceOptions() {
 
 	// Workspace group: workspace-management keys, surfaced in every state so
 	// users discover them without opening the full help screen.
-	workspaceGroup := []keys.KeyName{keys.KeyAddWorkspace}
+	workspaceGroup := []keys.KeyName{keys.KeyAddWorkspace, keys.KeySetAgent}
 
 	// System group
 	systemGroup := []keys.KeyName{keys.KeyTab, keys.KeyHelp, keys.KeyQuit}

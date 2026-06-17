@@ -39,10 +39,14 @@ type Workspace struct {
 	RepoPath    string             `json:"repo_path"`
 	RemoteURL   string             `json:"remote_url,omitempty"`
 	Profiles    []WorkspaceProfile `json:"profiles,omitempty"`
-	WorktreeDir string             `json:"worktree_dir,omitempty"`
-	Hooks       Hooks              `json:"hooks,omitempty"`
-	CreatedAt   time.Time          `json:"created_at"`
-	LastUsedAt  time.Time          `json:"last_used_at"`
+	// DefaultAgent is the program command (the dedup key used by the agent
+	// picker) that new sessions in this workspace default to. Empty falls back
+	// to the first profile, then the launch-time default program.
+	DefaultAgent string    `json:"default_agent,omitempty"`
+	WorktreeDir  string    `json:"worktree_dir,omitempty"`
+	Hooks        Hooks     `json:"hooks,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+	LastUsedAt   time.Time `json:"last_used_at"`
 }
 
 // WorkspaceID derives a stable identifier from a canonical repo path. The
@@ -169,6 +173,21 @@ func (r *WorkspaceRegistry) Remove(id string) error {
 	return r.saveLocked()
 }
 
+// SetDefaultAgent persists the default agent (program command) for a workspace
+// by ID. Ignores not-found. The chosen program becomes the default for new
+// sessions created in that workspace.
+func (r *WorkspaceRegistry) SetDefaultAgent(id, program string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for i := range r.Workspaces {
+		if r.Workspaces[i].ID == id {
+			r.Workspaces[i].DefaultAgent = program
+			return r.saveLocked()
+		}
+	}
+	return nil
+}
+
 // Touch updates LastUsedAt for a workspace by ID. Best-effort; ignores not-found.
 func (r *WorkspaceRegistry) Touch(id string) error {
 	r.mu.Lock()
@@ -250,6 +269,15 @@ func (w *Workspace) WorktreeRoot() (string, error) {
 func (w *Workspace) FindProfile(name string) *WorkspaceProfile {
 	for i := range w.Profiles {
 		if w.Profiles[i].Name == name {
+			return &w.Profiles[i]
+		}
+	}
+	return nil
+}
+
+func (w *Workspace) FindProfileByProgram(program string) *WorkspaceProfile {
+	for i := range w.Profiles {
+		if w.Profiles[i].Program == program {
 			return &w.Profiles[i]
 		}
 	}

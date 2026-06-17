@@ -51,6 +51,8 @@ const (
 	stateConfirm
 	// stateAddWorkspace is the state while the "add workspace" overlay is open.
 	stateAddWorkspace
+	// stateSetAgent is the state while the "set default agent" overlay is open.
+	stateSetAgent
 	// stateCommand is the state while the ":" command bar is capturing input.
 	stateCommand
 	// stateFilter is the state while the "/" filter bar is capturing input.
@@ -132,6 +134,10 @@ type home struct {
 	textInputOverlay *overlay.TextInputOverlay
 	// textOverlay displays text information
 	textOverlay *overlay.TextOverlay
+	// agentPickerOverlay lets the user set a workspace's default agent (stateSetAgent)
+	agentPickerOverlay *overlay.AgentPickerOverlay
+	// agentPickerScopeID is the workspace the open agent picker writes its default to
+	agentPickerScopeID string
 	// confirmationOverlay displays confirmation modals
 	confirmationOverlay *overlay.ConfirmationOverlay
 	// pendingConfirmCmd is dispatched after the confirmation overlay closes so
@@ -257,7 +263,18 @@ func (m *home) resolveWorkspaceProgram() (program, profileName string) {
 	}
 	reg := config.LoadWorkspaceRegistry()
 	ws := reg.Get(id)
-	if ws == nil || len(ws.Profiles) == 0 {
+	if ws == nil {
+		return
+	}
+	// A remembered per-workspace default agent wins over the first profile.
+	if ws.DefaultAgent != "" {
+		name := ws.DefaultAgent
+		if p := ws.FindProfileByProgram(ws.DefaultAgent); p != nil {
+			name = p.Name
+		}
+		return ws.DefaultAgent, name
+	}
+	if len(ws.Profiles) == 0 {
 		return
 	}
 	return ws.Profiles[0].Program, ws.Profiles[0].Name
@@ -516,6 +533,9 @@ func (m *home) updateHandleWindowSizeEvent(msg tea.WindowSizeMsg) {
 	if m.textOverlay != nil {
 		m.textOverlay.SetWidth(int(float32(msg.Width) * 0.6))
 	}
+	if m.agentPickerOverlay != nil {
+		m.agentPickerOverlay.SetWidth(int(float32(msg.Width) * 0.6))
+	}
 
 	previewWidth, previewHeight := m.tabbedWindow.GetPreviewSize()
 	if err := m.list.SetSessionPreviewSize(previewWidth, previewHeight); err != nil {
@@ -739,7 +759,7 @@ func (m *home) handleMenuHighlighting(msg tea.KeyMsg) (cmd tea.Cmd, returnEarly 
 		m.keySent = false
 		return nil, false
 	}
-	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm || m.state == stateAddWorkspace || m.state == stateCommand || m.state == stateFilter {
+	if m.state == statePrompt || m.state == stateHelp || m.state == stateConfirm || m.state == stateAddWorkspace || m.state == stateSetAgent || m.state == stateCommand || m.state == stateFilter {
 		return nil, false
 	}
 	// If it's in the global keymap, we should try to highlight it.
@@ -978,6 +998,24 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		m.textInputOverlay = nil
 		m.state = stateDefault
 		return m, tea.WindowSize()
+	} else if m.state == stateSetAgent {
+		shouldClose := m.agentPickerOverlay.HandleKeyPress(msg)
+		if !shouldClose {
+			return m, nil
+		}
+		submitted := m.agentPickerOverlay.Submitted
+		program := m.agentPickerOverlay.GetSelectedProgram()
+		id := m.agentPickerScopeID
+		m.agentPickerOverlay = nil
+		m.agentPickerScopeID = ""
+		m.state = stateDefault
+		if submitted && id != "" {
+			reg := config.LoadWorkspaceRegistry()
+			if err := reg.SetDefaultAgent(id, program); err != nil {
+				return m, tea.Batch(tea.WindowSize(), m.handleError(err))
+			}
+		}
+		return m, tea.WindowSize()
 	}
 
 	// Handle confirmation state
@@ -1206,6 +1244,8 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		return m, m.runFinishInteractive(selected)
 	case keys.KeyAddWorkspace:
 		return m.openAddWorkspace()
+	case keys.KeySetAgent:
+		return m.openSetAgent()
 	case keys.KeyEnter:
 		// Drill-down: Enter on the workspaces view opens that workspace's
 		// sessions; Enter on the sessions view opens the selected session's
@@ -1495,9 +1535,13 @@ func (m *home) handleError(err error) tea.Cmd {
 }
 
 func (m *home) newPromptOverlay() *overlay.TextInputOverlay {
+	reg := config.LoadWorkspaceRegistry()
+	ws := reg.Get(m.scopeWorkspaceID()) // may be nil (no workspace in context)
+	defProg, _ := m.resolveWorkspaceProgram()
+	profiles := config.MergedAgentProfiles(m.appConfig, ws, defProg)
 	o := overlay.NewTextInputOverlayWithBranchPicker(
 		"New session — prompt (optional). Tab for branch/profile · Enter to create",
-		"", m.appConfig.GetProfiles())
+		"", profiles)
 	o.SetSubmitOnEnter(true)
 	return o
 }
@@ -1803,6 +1847,8 @@ var actionWordToKey = map[string]string{
 	"open":         "enter",
 	"add":          "A",
 	"addworkspace": "A",
+	"agent":        "G",
+	"setagent":     "G",
 }
 
 // dispatchSyntheticKey re-feeds a keybinding through the normal key handler, so
@@ -1840,6 +1886,36 @@ func (m *home) openAddWorkspace() (tea.Model, tea.Cmd) {
 	// tea.WindowSize triggers updateHandleWindowSizeEvent which calls
 	// m.textInputOverlay.SetSize. Without this, the embedded textarea has
 	// width 0 → renders one char per line.
+	return m, tea.WindowSize()
+}
+
+// openSetAgent opens the agent picker to set the in-context (or, on the
+// workspaces view, the selected) workspace's default agent. Bound to G.
+func (m *home) openSetAgent() (tea.Model, tea.Cmd) {
+	id := m.scopeWorkspaceID()
+	if id == "" {
+		// On the workspaces view there is no scope; use the highlighted row.
+		id = m.workspacesView.SelectedWorkspaceID()
+	}
+	if id == "" {
+		return m, m.handleError(fmt.Errorf("enter a workspace first to set its default agent"))
+	}
+	reg := config.LoadWorkspaceRegistry()
+	ws := reg.Get(id) // may be nil for an unregistered scope
+	// Highlight the workspace's current default: its remembered agent, else its
+	// first profile, else the launch-time program.
+	defProg := m.program
+	if ws != nil {
+		if ws.DefaultAgent != "" {
+			defProg = ws.DefaultAgent
+		} else if len(ws.Profiles) > 0 {
+			defProg = ws.Profiles[0].Program
+		}
+	}
+	profiles := config.MergedAgentProfiles(m.appConfig, ws, defProg)
+	m.agentPickerOverlay = overlay.NewAgentPickerOverlay(profiles, defProg)
+	m.agentPickerScopeID = id
+	m.state = stateSetAgent
 	return m, tea.WindowSize()
 }
 
@@ -2041,6 +2117,11 @@ func (m *home) View() string {
 			log.ErrorLog.Printf("confirmation overlay is nil")
 		}
 		return overlay.PlaceOverlay(0, 0, m.confirmationOverlay.Render(), mainView, true, true)
+	} else if m.state == stateSetAgent {
+		if m.agentPickerOverlay == nil {
+			log.ErrorLog.Printf("agent picker overlay is nil")
+		}
+		return overlay.PlaceOverlay(0, 0, m.agentPickerOverlay.Render(), mainView, true, true)
 	}
 
 	return mainView
