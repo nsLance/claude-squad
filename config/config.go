@@ -126,6 +126,32 @@ func (c *Config) AgentCommandFor(program string) AgentCommand {
 	return ac
 }
 
+// MergeResumeIntoProgram folds a launch program's path/flags into its resume
+// recipe so a rebuilt ("recycled") session continues its prior conversation
+// while still honoring the current profile. When the resume recipe targets the
+// same base agent as the program — e.g. program "codex --sandbox workspace-write"
+// and resume "codex resume --last" — the result keeps the full program and
+// appends the resume's trailing args: "codex --sandbox workspace-write resume
+// --last". A resume recipe for a different command (a custom wrapper) is left
+// untouched, and an empty resume falls back to the program itself.
+func MergeResumeIntoProgram(program, resume string) string {
+	if resume == "" {
+		return program
+	}
+	if program == "" {
+		return resume
+	}
+	rFields := strings.Fields(resume)
+	if len(rFields) == 0 || baseProgram(program) != baseProgram(resume) {
+		return resume
+	}
+	suffix := strings.Join(rFields[1:], " ")
+	if suffix == "" {
+		return program
+	}
+	return program + " " + suffix
+}
+
 // GetProgram returns the program to run. If Profiles is non-empty and
 // DefaultProgram matches a profile name, that profile's Program is returned.
 // Otherwise DefaultProgram is returned as-is.

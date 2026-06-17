@@ -267,6 +267,16 @@ func (t *TextInputOverlay) GetSelectedProgram() string {
 	return t.profilePicker.GetSelectedProfile().Program
 }
 
+// GetSelectedProfileName returns the name of the profile the user selected, so
+// the created session can remember which profile it came from (and re-resolve it
+// on rebuild). Returns empty string if no profile picker is present.
+func (t *TextInputOverlay) GetSelectedProfileName() string {
+	if t.profilePicker == nil {
+		return ""
+	}
+	return t.profilePicker.GetSelectedProfile().Name
+}
+
 // BranchFilterVersion returns the current filter version from the branch picker.
 // Returns 0 if no branch picker is present.
 func (t *TextInputOverlay) BranchFilterVersion() uint64 {

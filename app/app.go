@@ -280,6 +280,31 @@ func (m *home) resolveWorkspaceProgram() (program, profileName string) {
 	return ws.Profiles[0].Program, ws.Profiles[0].Name
 }
 
+// programForProfile returns the up-to-date launch program for a session's
+// profile, re-reading config so edits to that profile (e.g. changed codex
+// flags) flow into a rebuilt session. Workspace profiles win over global ones.
+// Falls back to the instance's stored Program when it has no profile
+// association or the profile no longer exists.
+func (m *home) programForProfile(inst *session.Instance) string {
+	if inst.ProfileName == "" {
+		return inst.Program
+	}
+	if inst.WorkspaceID != "" {
+		reg := config.LoadWorkspaceRegistry()
+		if ws := reg.Get(inst.WorkspaceID); ws != nil {
+			if p := ws.FindProfile(inst.ProfileName); p != nil {
+				return p.Program
+			}
+		}
+	}
+	for _, p := range m.appConfig.GetProfiles() {
+		if p.Name == inst.ProfileName {
+			return p.Program
+		}
+	}
+	return inst.Program
+}
+
 // applyWorkspaceFocus scopes the sessions view to a workspace (the one new
 // sessions are created in). id "" clears the scope (the unscoped "all sessions"
 // view). This is the only place the workspace context is set.
@@ -923,6 +948,11 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 					if selectedProgram != "" {
 						selected.Program = selectedProgram
 					}
+					// Remember which profile was picked so a later rebuild can
+					// re-resolve it and pull in any profile edits.
+					if pn := m.textInputOverlay.GetSelectedProfileName(); pn != "" {
+						selected.ProfileName = pn
+					}
 					selected.Prompt = prompt
 
 					// Finalize into list and start
@@ -1227,9 +1257,21 @@ func (m *home) handleKeyPress(msg tea.KeyMsg) (mod tea.Model, cmd tea.Cmd) {
 		if selected == nil || selected.Status == session.Loading {
 			return m, nil
 		}
+		// Pull in any edits to the session's profile (e.g. changed agent flags)
+		// so the rebuild relaunches with the current program, not the one baked
+		// in at creation time.
+		if prog := m.programForProfile(selected); prog != selected.Program {
+			selected.Program = prog
+			if err := m.storage.SaveInstances(m.list.GetInstances()); err != nil {
+				log.WarningLog.Printf("recycle: persisting program update failed: %v", err)
+			}
+		}
 		ac := m.appConfig.AgentCommandFor(selected.Program)
+		// Fold the program's flags/path into the resume command so the continued
+		// session honors the refreshed profile (e.g. codex sandbox/approval).
+		resume := config.MergeResumeIntoProgram(selected.Program, ac.Resume)
 		m.showHelpScreen(helpTypeInstanceRecycle{}, func() {
-			if err := selected.Recycle(ac.Resume, ac.QuitKeys); err != nil {
+			if err := selected.Recycle(resume, ac.QuitKeys); err != nil {
 				m.handleError(err)
 				return
 			}
