@@ -2,6 +2,7 @@ package tmux
 
 import (
 	cmd2 "claude-squad/cmd"
+	"claude-squad/log"
 	"fmt"
 	"math/rand"
 	"os"
@@ -81,6 +82,12 @@ func TestPipePane_StartAndStop(t *testing.T) {
 func TestStartTmuxSession(t *testing.T) {
 	ptyFactory := NewMockPtyFactory(t)
 
+	// Start resolves the program against PATH; pin it so the expected
+	// new-session command does not depend on what is installed on this host.
+	origLookPath := lookPath
+	t.Cleanup(func() { lookPath = origLookPath })
+	lookPath = func(string) (string, error) { return "/usr/local/bin/claude", nil }
+
 	created := false
 	cmdExec := cmd_test.MockCmdExec{
 		RunFunc: func(cmd *exec.Cmd) error {
@@ -101,7 +108,7 @@ func TestStartTmuxSession(t *testing.T) {
 	err := session.Start(workdir, nil)
 	require.NoError(t, err)
 	require.Equal(t, 2, len(ptyFactory.cmds))
-	require.Equal(t, fmt.Sprintf("tmux -L claudesquad new-session -d -s claudesquad_test-session -c %s claude", workdir),
+	require.Equal(t, fmt.Sprintf("tmux -L claudesquad new-session -d -s claudesquad_test-session -c %s /usr/local/bin/claude", workdir),
 		cmd2.ToString(ptyFactory.cmds[0]))
 	require.Equal(t, "tmux -L claudesquad attach-session -t claudesquad_test-session",
 		cmd2.ToString(ptyFactory.cmds[1]))
@@ -223,4 +230,93 @@ func TestGracefulQuit(t *testing.T) {
 		require.NoError(t, session.GracefulQuit(nil, time.Second))
 		require.Len(t, sent, 2)
 	})
+}
+
+func TestResolveProgramPath(t *testing.T) {
+	log.Initialize(false) // resolveProgramPath logs a warning when lookup fails
+	dir := t.TempDir()
+	codex := filepath.Join(dir, "codex")
+	require.NoError(t, os.WriteFile(codex, []byte("#!/bin/sh\n"), 0755))
+
+	orig := lookPath
+	t.Cleanup(func() { lookPath = orig })
+	lookPath = func(file string) (string, error) {
+		if file == "codex" {
+			return codex, nil
+		}
+		return "", fmt.Errorf("%s: not found", file)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		program string
+		want    string
+	}{
+		{"bare name resolves to absolute path", "codex", codex},
+		{"flags are preserved", "codex --sandbox workspace-write", codex + " --sandbox workspace-write"},
+		{"absolute path is left alone", "/opt/homebrew/bin/codex", "/opt/homebrew/bin/codex"},
+		{"relative path is left alone", "./codex --flag", "./codex --flag"},
+		{"unresolvable program is left alone", "nonesuch --flag", "nonesuch --flag"},
+		{"empty program is left alone", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, resolveProgramPath(tc.program))
+		})
+	}
+}
+
+// A resolved path containing spaces must be quoted, since tmux runs the pane
+// command through a shell.
+func TestResolveProgramPath_QuotesPathWithSpaces(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "my tools")
+	require.NoError(t, os.MkdirAll(dir, 0755))
+	agent := filepath.Join(dir, "agent")
+	require.NoError(t, os.WriteFile(agent, []byte("#!/bin/sh\n"), 0755))
+
+	orig := lookPath
+	t.Cleanup(func() { lookPath = orig })
+	lookPath = func(string) (string, error) { return agent, nil }
+
+	require.Equal(t, shellQuote(agent)+" --flag", resolveProgramPath("agent --flag"))
+}
+
+// Start must hand tmux the resolved path while leaving t.program — which the
+// pane status heuristics match on — untouched.
+func TestStart_ResolvesProgramButKeepsConfiguredName(t *testing.T) {
+	dir := t.TempDir()
+	claude := filepath.Join(dir, "claude")
+	require.NoError(t, os.WriteFile(claude, []byte("#!/bin/sh\n"), 0755))
+
+	orig := lookPath
+	t.Cleanup(func() { lookPath = orig })
+	lookPath = func(string) (string, error) { return claude, nil }
+
+	// has-session must report "absent" on Start's initial check and "present"
+	// on the poll that follows, or Start either bails early or polls until it
+	// times out.
+	hasSessionCalls := 0
+	exe := cmd_test.MockCmdExec{
+		RunFunc: func(c *exec.Cmd) error {
+			for _, a := range c.Args {
+				if a == "has-session" {
+					hasSessionCalls++
+					if hasSessionCalls == 1 {
+						return fmt.Errorf("no such session")
+					}
+					return nil
+				}
+			}
+			return nil
+		},
+	}
+	pty := NewMockPtyFactory(t)
+	session := NewTmuxSessionWithDeps("s", ProgramClaude, "", pty, exe)
+	// Start's own new-session goes through the pty factory, not cmdExec, so
+	// inspect the command the factory was handed.
+	require.NoError(t, session.Start(dir, []string{"CS_SESSION=s"}))
+
+	require.NotEmpty(t, pty.cmds)
+	joined := strings.Join(pty.cmds[0].Args, " ")
+	require.Contains(t, joined, claude, "tmux should receive the resolved path")
+	require.Equal(t, ProgramClaude, session.program, "configured program name must be preserved")
 }

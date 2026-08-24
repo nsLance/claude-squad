@@ -185,6 +185,10 @@ func newTmuxSession(name, program, workspaceID string, ptyFactory PtyFactory, cm
 // the session (ex. claude). workdir is the git worktree directory. env is exported per-session
 // via "tmux new-session -e KEY=VALUE", which works even when joining an existing tmux server
 // (fixes the env-staleness behavior reported in #277).
+//
+// Note that -e does not cover PATH: tmux resolves the pane's command against
+// the server's own PATH regardless of what the session environment says, so the
+// program is resolved up front by resolveProgramPath instead.
 func (t *TmuxSession) Start(workDir string, env []string) error {
 	// Check if the session already exists
 	if t.DoesSessionExist() {
@@ -195,7 +199,10 @@ func (t *TmuxSession) Start(workDir string, env []string) error {
 	for _, kv := range env {
 		args = append(args, "-e", kv)
 	}
-	args = append(args, "-d", "-s", t.sanitizedName, "-c", workDir, t.program)
+	// Resolve the program against our own PATH rather than the tmux server's
+	// (see resolveProgramPath). t.program itself is left alone — the pane
+	// status heuristics match on the configured name.
+	args = append(args, "-d", "-s", t.sanitizedName, "-c", workDir, resolveProgramPath(t.program))
 	cmd := Command(args...)
 
 	ptmx, err := t.ptyFactory.Start(cmd)
@@ -689,4 +696,55 @@ func cleanupSessionsOn(cmdExec cmd.Executor, mk func(...string) *exec.Cmd) error
 		}
 	}
 	return nil
+}
+
+// lookPath is indirected so tests can control PATH resolution.
+var lookPath = exec.LookPath
+
+// resolveProgramPath rewrites a launch command so its executable is an absolute
+// path resolved against claude-squad's own PATH.
+//
+// tmux ignores PATH supplied through the session environment: `new-session -e
+// PATH=...` reaches the pane for every other variable, but panes still resolve
+// their command against the PATH the tmux *server* was started with (verified
+// on tmux 3.6a, for both shell and direct-binary commands). Our server is
+// long-lived — it is spawned by the first session created and then commonly
+// outlives, by weeks, the shell that spawned it — so a bare program name like
+// "codex" gets resolved against a stale snapshot. That can select a binary the
+// user has since upgraded, moved, or uninstalled: a pane started months ago
+// keeps running a deleted binary, and a pane started today can still miss a
+// tool installed into a directory added to PATH after the server came up.
+//
+// Resolving here pins each launch to whatever the program name means to
+// claude-squad at the moment the session starts, which is the PATH the user's
+// current shell has.
+//
+// Only the executable (first field) is rewritten; any flags are preserved. A
+// command that already names a path, or one that cannot be resolved, is
+// returned unchanged so tmux reports the failure exactly as it does today.
+func resolveProgramPath(program string) string {
+	trimmed := strings.TrimSpace(program)
+	fields := strings.Fields(trimmed)
+	if len(fields) == 0 {
+		return program
+	}
+	first := fields[0]
+	// Already a path (absolute or relative) — the caller has been explicit.
+	if strings.ContainsRune(first, os.PathSeparator) {
+		return program
+	}
+	abs, err := lookPath(first)
+	if err != nil {
+		log.WarningLog.Printf("could not resolve program %q on PATH: %v", first, err)
+		return program
+	}
+	// trimmed starts with first, so the remainder is everything after it.
+	rest := strings.TrimSpace(trimmed[len(first):])
+	if strings.ContainsAny(abs, " \t") {
+		abs = shellQuote(abs)
+	}
+	if rest == "" {
+		return abs
+	}
+	return abs + " " + rest
 }
